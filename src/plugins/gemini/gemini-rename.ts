@@ -1,6 +1,6 @@
-import { visitAllIdentifiers } from "./local-llm-rename/visit-all-identifiers.js";
-import { verbose } from "../verbose.js";
-import { showPercentage } from "../progress.js";
+import { visitAllIdentifiers } from "../local-llm-rename/visit-all-identifiers.js";
+import { verbose } from "../../verbose.js";
+import { showPercentage } from "../../progress.js";
 import {
   GoogleGenerativeAI,
   ModelParams,
@@ -19,6 +19,7 @@ export function geminiRename({
   const client = new GoogleGenerativeAI(apiKey);
 
   return async (code: string): Promise<string> => {
+    const startTime = Date.now();
     return await visitAllIdentifiers(
       code,
       async (name, surroundingCode) => {
@@ -38,7 +39,7 @@ export function geminiRename({
         return renamed;
       },
       contextWindowSize,
-      showPercentage
+      (percentage) => showPercentage(percentage, startTime)
     );
   };
 }

@@ -3,7 +3,7 @@ import prettier from "../plugins/prettier.js";
 import { unminify } from "../unminify.js";
 import babel from "../plugins/babel/babel.js";
 import { verbose } from "../verbose.js";
-import { geminiRename } from "../plugins/gemini-rename.js";
+import { geminiRename } from "../plugins/gemini/gemini-rename.js";
 import { env } from "../env.js";
 import { DEFAULT_CONTEXT_WINDOW_SIZE } from "./default-args.js";
 import { parseNumber } from "../number-utils.js";
