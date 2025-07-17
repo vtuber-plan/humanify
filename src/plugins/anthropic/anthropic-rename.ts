@@ -7,12 +7,14 @@ export function anthropicRename({
     apiKey,
     baseURL,
     model,
-    contextWindowSize
+    contextWindowSize,
+    resume = undefined,
 }: {
     apiKey: string;
     baseURL?: string;
     model: string;
     contextWindowSize: number;
+    resume?: string;
 }) {
     const client = new Anthropic({
         apiKey,
@@ -39,7 +41,8 @@ export function anthropicRename({
                 return renamed;
             },
             contextWindowSize,
-            showPercentage
+            showPercentage,
+            resume
         );
     };
 }

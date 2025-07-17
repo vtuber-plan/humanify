@@ -1,6 +1,7 @@
 import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
+import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -14,20 +15,55 @@ export async function visitAllIdentifiers(
   code: string,
   visitor: Visitor,
   contextWindowSize: number,
-  onProgress?: (percentageDone: number) => void
-) {
-  const ast = await parseAsync(code, { sourceType: "unambiguous" });
-  const renames = new Set<string>();
-  const visited = new Set<string>();
+  onProgress?: (percentageDone: number) => void,
+  resume?: string
+): Promise<string> {
+  let ast: Node | null;
+  let renames: Set<string>;
+  let visited: Set<string>;
+  let scopes: NodePath<Identifier>[];
+  let currentIndex = 0;
 
+  ast = await parseAsync(code, { sourceType: "unambiguous" });
   if (!ast) {
     throw new Error("Failed to parse code");
   }
+  
+  const sessionId = resume;
+  
+  // Handle resume functionality - if codePath is provided, it implies resume
+  if (sessionId) {
+    const resumeState = await loadResumeState(sessionId);
+    if (resumeState) {
+      renames = new Set(resumeState.renames);
+      visited = new Set(resumeState.visited);
+      scopes = await findScopes(ast);
+      currentIndex = resumeState.currentIndex;
+      
+      console.log(`Resuming from index ${currentIndex}/${scopes.length}`);
+    } else {
+      // No resume state found, start fresh
+      renames = new Set<string>();
+      visited = new Set<string>();
+      scopes = await findScopes(ast);
+    }
+  } else {
+    // Fresh start
+    ast = await parseAsync(code, { sourceType: "unambiguous" });
+    if (!ast) {
+      throw new Error("Failed to parse code");
+    }
+    renames = new Set<string>();
+    visited = new Set<string>();
+    scopes = await findScopes(ast);
+  }
 
-  const scopes = await findScopes(ast);
   const numRenamesExpected = scopes.length;
 
-  for (const smallestScope of scopes) {
+  // Process remaining scopes
+  for (let i = currentIndex; i < scopes.length; i++) {
+    const smallestScope = scopes[i];
+    
     if (hasVisited(smallestScope, visited)) continue;
 
     const smallestScopeNode = smallestScope.node;
@@ -54,9 +90,26 @@ export async function visitAllIdentifiers(
     }
     markVisited(smallestScope, smallestScopeNode.name, visited);
 
+    // Save progress periodically
+    if (sessionId && (i % 10 === 0 || i === scopes.length - 1)) {
+      const resumeState: ResumeState = {
+        renames: Array.from(renames),
+        visited: Array.from(visited),
+        currentIndex: i + 1,
+        totalScopes: scopes.length,
+        codePath: resume || ""
+      };
+      await saveResumeState(resumeState, sessionId);
+    }
+
     onProgress?.(visited.size / numRenamesExpected);
   }
   onProgress?.(1);
+
+  // Clean up resume state when complete
+  if (sessionId) {
+    await deleteResumeState(sessionId);
+  }
 
   const stringified = await transformFromAstAsync(ast);
   if (stringified?.code == null) {

@@ -28,6 +28,11 @@ export const openai = cli()
     "The context size to use for the LLM",
     `${DEFAULT_CONTEXT_WINDOW_SIZE}`
   )
+  .option(
+    "--resume <resume>",
+    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+    undefined
+  )
   .argument("input", "The input minified Javascript file")
   .action(async (filename, opts) => {
     if (opts.verbose) {
@@ -43,7 +48,8 @@ export const openai = cli()
         apiKey,
         baseURL,
         model: opts.model,
-        contextWindowSize
+        contextWindowSize,
+        resume: opts.resume
       }),
       prettier
     ]);

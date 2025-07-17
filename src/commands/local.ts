@@ -26,6 +26,16 @@ export const local = cli()
     "The context size to use for the LLM",
     `${DEFAULT_CONTEXT_WINDOW_SIZE}`
   )
+  .option(
+    "--resume",
+    "Resume from a previous interrupted session",
+    false
+  )
+  .option(
+    "--codePath <codePath>",
+    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+    undefined
+  )
   .argument("input", "The input minified Javascript file")
   .action(async (filename, opts) => {
     if (opts.verbose) {
@@ -42,7 +52,7 @@ export const local = cli()
     });
     await unminify(filename, opts.outputDir, [
       babel,
-      localReanme(prompt, contextWindowSize),
+      (code: string) => localReanme(prompt, contextWindowSize)(code, opts.resume || !!opts.codePath, opts.codePath),
       prettier
     ]);
   });

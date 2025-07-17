@@ -23,6 +23,11 @@ export const azure = cli()
     "The Google Gemini/AIStudio API key. Alternatively use GEMINI_API_KEY environment variable"
   )
   .option("--verbose", "Show verbose output")
+  .option(
+    "--resume <resume>",
+    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+    undefined
+  )
   .argument("input", "The input minified Javascript file")
   .action(async (filename, opts) => {
     if (opts.verbose) {
@@ -34,7 +39,12 @@ export const azure = cli()
 
     await unminify(filename, opts.outputDir, [
       babel,
-      geminiRename({ apiKey, model: opts.model, contextWindowSize }),
+      geminiRename({ 
+        apiKey, 
+        model: opts.model, 
+        contextWindowSize,
+        resume: opts.resume,
+      }),
       prettier
     ]);
   });

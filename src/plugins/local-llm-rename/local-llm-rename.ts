@@ -7,7 +7,7 @@ import { visitAllIdentifiers } from "./visit-all-identifiers.js";
 const PADDING_CHARS = 200;
 
 export const localReanme = (prompt: Prompt, contextWindowSize: number) => {
-  return async (code: string): Promise<string> => {
+  return async (code: string, resume = false, codePath?: string): Promise<string> => {
     const filename = await defineFilename(
       prompt,
       code.slice(0, PADDING_CHARS * 2)
@@ -18,7 +18,9 @@ export const localReanme = (prompt: Prompt, contextWindowSize: number) => {
       (name, surroundingCode) =>
         unminifyVariableName(prompt, name, filename, surroundingCode),
       contextWindowSize,
-      showPercentage
+      showPercentage,
+      resume,
+      codePath
     );
   };
 };
