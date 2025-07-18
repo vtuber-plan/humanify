@@ -34,7 +34,7 @@ export function showPercentage(percentage: number, startTime?: number) {
     const elapsed = (Date.now() - startTime) / 1000; // 秒
     const total = elapsed / percentage;
     const remaining = Math.max(0, total - elapsed);
-    etaStr = `，预计剩余 ${formatTime(remaining)}`;
+    etaStr = `, estimated ${formatTime(remaining)}`;
   }
   if (!verbose.enabled) {
     process.stdout.clearLine?.(0);

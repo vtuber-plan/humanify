@@ -6,6 +6,7 @@ import {
   ModelParams,
   SchemaType
 } from "@google/generative-ai";
+import { createClientOptions } from "../../proxy-utils.js";
 
 export function geminiRename({
   apiKey,
@@ -18,6 +19,8 @@ export function geminiRename({
   contextWindowSize: number;
   resume?: string;
 }) {
+  // Google Generative AI client doesn't support custom HTTP agents directly
+  // We'll create it without proxy support for now
   const client = new GoogleGenerativeAI(apiKey);
 
   return async (code: string): Promise<string> => {

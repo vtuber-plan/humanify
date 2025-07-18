@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { visitAllIdentifiers } from "../local-llm-rename/visit-all-identifiers.js";
 import { showPercentage } from "../../progress.js";
 import { verbose } from "../../verbose.js";
+import { createClientOptions } from "../../proxy-utils.js";
 
 export function anthropicRename({
     apiKey,
@@ -16,10 +17,11 @@ export function anthropicRename({
     contextWindowSize: number;
     resume?: string;
 }) {
-    const client = new Anthropic({
+    const clientOptions = createClientOptions(baseURL || 'https://api.anthropic.com', {
         apiKey,
         baseURL
     });
+    const client = new Anthropic(clientOptions);
 
     return async (code: string): Promise<string> => {
         return await visitAllIdentifiers(

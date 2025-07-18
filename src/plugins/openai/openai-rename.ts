@@ -4,6 +4,8 @@ import { showPercentage } from "../../progress.js";
 import { verbose } from "../../verbose.js";
 import { sleep } from "openai/core.mjs";
 
+import { createClientOptions } from "../../proxy-utils.js";
+
 export function openaiRename({
   apiKey,
   baseURL,
@@ -17,7 +19,11 @@ export function openaiRename({
   contextWindowSize: number;
   resume?: string;
 }) {
-  const client = new OpenAI({ apiKey, baseURL });
+  const clientOptions = createClientOptions(baseURL, {
+    apiKey,
+    baseURL,
+  });
+  const client = new OpenAI(clientOptions);
 
   return async (code: string): Promise<string> => {
     const startTime = Date.now();
@@ -29,26 +35,48 @@ export function openaiRename({
 
         // 封装一次LLM请求和解析的逻辑，便于重试
         async function getRenamed(promptParams: { name: string; surroundingCode: string; model: string; extraPrompt?: string }, rawResult?: string): Promise<string> {
-          let response, result, jsonStr;
-          if (!rawResult) {
-            response = await client.chat.completions.create(
-              toRenamePrompt(promptParams.name, promptParams.surroundingCode, promptParams.model, promptParams.extraPrompt)
-            );
-            result = response.choices[0].message?.content;
-            if (!result) {
-              throw new Error("Failed to rename", { cause: response });
-            }
-            verbose.log("LLM return:", result);
-          } else {
-            result = rawResult;
+          if (rawResult) {
+            return extractJsonResponse(rawResult);
           }
 
-          jsonStr = result;
-          if (result.includes('```')) {
+          const stream = await client.chat.completions.create({
+            ...toRenamePrompt(promptParams.name, promptParams.surroundingCode, promptParams.model, promptParams.extraPrompt),
+            stream: true,
+          });
+
+          let fullContent = "";
+          const timeoutMs = 5 * 60 * 1000; // 5分钟超时
+          const startTime = Date.now();
+
+          try {
+            for await (const chunk of stream) {
+              if (Date.now() - startTime > timeoutMs) {
+                throw new Error("Stream timeout after 30 seconds");
+              }
+
+              const content = chunk.choices[0]?.delta?.content || "";
+              if (content) {
+                fullContent += content;
+                verbose.log("Stream chunk:", content);
+              }
+            }
+
+            // 流结束后处理完整内容
+            return extractJsonResponse(fullContent);
+          } catch (error) {
+            verbose.log("Stream error:", error);
+            throw error;
+          }
+        }
+
+        function extractJsonResponse(result: string): string {
+          let jsonStr = result.trim();
+
+          if (jsonStr.includes('```')) {
             // 提取```json ...```或``` ...```中的内容，只取代码块内的内容
-            const match = result.match(/```[a-z]*\s*([\s\S]*?)\s*```/i);
+            const match = jsonStr.match(/```[a-z]*\s*([\s\S]*?)\s*```/i);
             if (match && match[1]) {
-              jsonStr = match[1];
+              jsonStr = match[1].trim();
               verbose.log("Extracted JSON string:", jsonStr);
             }
           }
@@ -66,25 +94,11 @@ export function openaiRename({
           renamed = await getRenamed({ name, surroundingCode, model });
         } catch (error) {
           // 如果第一次解析失败，重新发给LLM让其只返回JSON
+          verbose.log("Error parsing response:", error);
           verbose.log("Retrying with format correction prompt...");
-          let errorMsg = "";
-          let errorCauseMsg = "";
-          if (error instanceof Error) {
-            errorMsg = error.message || "";
-            if (error.cause && typeof error.cause === "object" && error.cause !== null && "message" in error.cause) {
-              errorCauseMsg = (error.cause as any).message || "";
-            }
-          }
-          const formatPrompt = `请将下面的内容仅以JSON格式输出，且不要包含任何多余的内容，只返回JSON对象：\n${errorMsg}\n${errorCauseMsg}`;
-          // 这里rawResult传result，prompt中说明只要JSON
-          let rawResult;
-          if (error instanceof Error && error.cause && typeof error.cause === "object" && error.cause !== null && "message" in error.cause) {
-            rawResult = (error.cause as any).message;
-          } else {
-            rawResult = undefined;
-          }
+          const formatPrompt = `请将下面的内容仅以JSON格式输出，且**不要包含任何多余的内容**，只返回JSON对象!!!`;
           try {
-            renamed = await getRenamed({ name, surroundingCode, model, extraPrompt: formatPrompt }, rawResult);
+            renamed = await getRenamed({ name, surroundingCode, model, extraPrompt: formatPrompt });
           } catch (error2) {
             verbose.log("Failed again to parse response after retry.");
             throw new Error("Failed to parse response after retry", { cause: error2 });
@@ -110,7 +124,7 @@ function toRenamePrompt(
   surroundingCode: string,
   model: string,
   extraPrompt?: string
-): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming {
+): OpenAI.Chat.Completions.ChatCompletionCreateParams {
   let userContent = `Rename Javascript variables/function \`${name}\` to have descriptive name based on their usage in the code."
         Here is the surrounding code:
         \`\`\`javascript
@@ -142,23 +156,23 @@ function toRenamePrompt(
         content: userContent
       }
     ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        strict: true,
-        name: "rename",
-        schema: {
-          type: "object",
-          properties: {
-            newName: {
-              type: "string",
-              description: `The new name for the variable/function called \`${name}\``
-            }
-          },
-          required: ["newName"],
-          additionalProperties: false
-        }
-      }
-    }
+    // response_format: {
+    //   type: "json_schema",
+    //   json_schema: {
+    //     strict: true,
+    //     name: "rename",
+    //     schema: {
+    //       type: "object",
+    //       properties: {
+    //         newName: {
+    //           type: "string",
+    //           description: `The new name for the variable/function called \`${name}\``
+    //         }
+    //       },
+    //       required: ["newName"],
+    //       additionalProperties: false
+    //     }
+    //   }
+    // }
   };
 }
