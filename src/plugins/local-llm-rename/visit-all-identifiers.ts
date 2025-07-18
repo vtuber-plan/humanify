@@ -24,17 +24,16 @@ export async function visitAllIdentifiers(
   let scopes: NodePath<Identifier>[];
   let currentIndex = 0;
 
-  ast = await parseAsync(code, { sourceType: "unambiguous" });
-  if (!ast) {
-    throw new Error("Failed to parse code");
-  }
-  
   const sessionId = resume;
   
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
     const resumeState = await loadResumeState(sessionId);
     if (resumeState) {
+      ast = await parseAsync(resumeState.code, { sourceType: "unambiguous" });
+      if (!ast) {
+        throw new Error("Failed to parse code");
+      }
       renames = new Set(resumeState.renames);
       visited = new Set(resumeState.visited);
       scopes = await findScopes(ast);
@@ -43,6 +42,10 @@ export async function visitAllIdentifiers(
       console.log(`Resuming from index ${currentIndex}/${scopes.length}`);
     } else {
       // No resume state found, start fresh
+      ast = await parseAsync(code, { sourceType: "unambiguous" });
+      if (!ast) {
+        throw new Error("Failed to parse code");
+      }
       renames = new Set<string>();
       visited = new Set<string>();
       scopes = await findScopes(ast);
@@ -92,7 +95,12 @@ export async function visitAllIdentifiers(
 
     // Save progress periodically
     if (sessionId && (i % 10 === 0 || i === scopes.length - 1)) {
+      const newCodeResult = await transformFromAstAsync(ast);
+      if (!newCodeResult || !newCodeResult.code) {
+        throw new Error("Failed to stringify code");
+      }
       const resumeState: ResumeState = {
+        code: newCodeResult?.code,
         renames: Array.from(renames),
         visited: Array.from(visited),
         currentIndex: i + 1,

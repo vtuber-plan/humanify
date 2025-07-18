@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 
 export interface ResumeState {
+  code: string;
   renames: string[];
   visited: string[];
   currentIndex: number;
