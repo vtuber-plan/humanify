@@ -11,6 +11,24 @@ const traverse: typeof babelTraverse.default.default = (
 
 type Visitor = (name: string, scope: string) => Promise<string>;
 
+function endWithNumber(name: string): boolean {
+  return /\d$/.test(name);
+}
+
+function getSuffixNumber(name: string): number {
+  const match = name.match(/(\d+)$/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+
+function renameConflictIndentier(name: string): string {
+  if (endWithNumber(name)) {
+    const suffixNumber = getSuffixNumber(name);
+    return name.replace(/(\d+)$/, (match) => (parseInt(match, 10) + 1).toString());
+  }
+  return `${name}1`;
+}
+
 export async function visitAllIdentifiers(
   code: string,
   visitor: Visitor,
@@ -85,7 +103,7 @@ export async function visitAllIdentifiers(
         renames.has(safeRenamed) ||
         smallestScope.scope.hasBinding(safeRenamed)
       ) {
-        safeRenamed = `_${safeRenamed}`;
+        safeRenamed = renameConflictIndentier(safeRenamed);
       }
       renames.add(safeRenamed);
 

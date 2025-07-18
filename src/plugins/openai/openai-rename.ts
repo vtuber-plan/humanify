@@ -39,10 +39,17 @@ export function openaiRename({
             return extractJsonResponse(rawResult);
           }
 
-          const stream = await client.chat.completions.create({
+          // 检查模型名是否包含qwen3（不区分大小写），如果是则添加extra_body参数
+          const isQwen3 = /qwen3/i.test(promptParams.model);
+          const requestParams: any = {
             ...toRenamePrompt(promptParams.name, promptParams.surroundingCode, promptParams.model, promptParams.extraPrompt),
             stream: true,
-          });
+          };
+          if (isQwen3) {
+            requestParams.extra_body = { chat_template_kwargs: { enable_thinking: false } };
+          }
+
+          const stream = await client.chat.completions.create(requestParams);
 
           let fullContent = "";
           const timeoutMs = 5 * 60 * 1000; // 5分钟超时
