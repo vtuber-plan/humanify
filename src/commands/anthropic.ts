@@ -28,12 +28,13 @@ export const anthropic = cli()
         "The context size to use for the LLM",
         `${DEFAULT_CONTEXT_WINDOW_SIZE}`
     )
-    .option(
-        "--resume <resume>",
-        "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
-        undefined
-    )
-    .argument("input", "The input minified Javascript file")
+      .option(
+    "--resume <resume>",
+    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+    undefined
+  )
+  .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
+  .argument("input", "The input minified Javascript file")
     .action(async (filename, opts) => {
         if (opts.verbose) {
             verbose.enabled = true;
@@ -43,14 +44,16 @@ export const anthropic = cli()
         const contextWindowSize = parseNumber(opts.contextSize);
 
         await unminify(filename, opts.outputDir, [
-            babel,
-            anthropicRename({
+            (code: string, enableSourceMap?: boolean) => babel(code, enableSourceMap),
+            (code: string) => anthropicRename({
                 apiKey,
                 baseURL,
                 model: opts.model,
                 contextWindowSize,
                 resume: opts.resume
-            }),
-            prettier
-        ]);
+            })(code),
+            (code: string) => prettier(code)
+        ], {
+            generateSourceMap: opts.sourcemap
+        });
     });

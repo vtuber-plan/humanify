@@ -1,12 +1,25 @@
 import fs from "fs/promises";
+import path from "path";
 import { ensureFileExists } from "./file-utils.js";
 import { webcrack } from "./plugins/webcrack.js";
 import { verbose } from "./verbose.js";
+import { 
+  generateSourceMap, 
+  saveSourceMap, 
+  addSourceMapReference,
+  SourceMapOptions 
+} from "./sourcemap/sourcemap-generator.js";
+import { initializeTracker, clearGlobalTracker, getGlobalTracker } from "./sourcemap/ast-position-tracker.js";
+
+export interface UnminifyOptions {
+  generateSourceMap?: boolean;
+}
 
 export async function unminify(
   filename: string,
   outputDir: string,
-  plugins: ((code: string) => Promise<string>)[] = []
+  plugins: ((code: string, enableSourceMap?: boolean) => Promise<string>)[] = [],
+  options: UnminifyOptions = {}
 ) {
   ensureFileExists(filename);
   const bundledCode = await fs.readFile(filename, "utf-8");
@@ -16,22 +29,61 @@ export async function unminify(
     console.log(`Processing file ${i + 1}/${extractedFiles.length}`);
 
     const file = extractedFiles[i];
-    const code = await fs.readFile(file.path, "utf-8");
+    const originalCode = await fs.readFile(file.path, "utf-8");
 
-    if (code.trim().length === 0) {
+    if (originalCode.trim().length === 0) {
       verbose.log(`Skipping empty file ${file.path}`);
       continue;
     }
 
+    // 如果启用source map，初始化位置跟踪器
+    let tracker = null;
+    if (options.generateSourceMap) {
+      tracker = initializeTracker(originalCode);
+    }
+
+    // 应用所有插件，传递source map启用标志
     const formattedCode = await plugins.reduce(
-      (p, next) => p.then(next),
-      Promise.resolve(code)
+      (p, next) => p.then(code => next(code, options.generateSourceMap)),
+      Promise.resolve(originalCode)
     );
 
-    verbose.log("Input: ", code);
+    verbose.log("Input: ", originalCode);
     verbose.log("Output: ", formattedCode);
 
-    await fs.writeFile(file.path, formattedCode);
+    // 生成source map（如果启用）
+    if (options.generateSourceMap && tracker) {
+      const sourceMapOptions: SourceMapOptions = {
+        originalFile: file.path,
+        generatedFile: file.path,
+        outputDir: outputDir
+      };
+
+      // 使用跟踪器生成精确的映射
+      const mappings = tracker.generateMappings(formattedCode);
+      const sourceMapContent = await generateSourceMap(
+        originalCode,
+        formattedCode,
+        sourceMapOptions,
+        mappings
+      );
+
+      const sourceMapFileName = `${path.basename(file.path)}.map`;
+      const sourceMapPath = path.join(outputDir, sourceMapFileName);
+
+      await saveSourceMap(sourceMapContent, sourceMapPath);
+
+      // 为生成的代码添加source map引用
+      const codeWithSourceMap = addSourceMapReference(formattedCode, sourceMapFileName);
+      await fs.writeFile(file.path, codeWithSourceMap);
+
+      console.log(`Generated source map: ${sourceMapPath} with ${mappings.length} mappings`);
+      
+      // 清理跟踪器
+      clearGlobalTracker();
+    } else {
+      await fs.writeFile(file.path, formattedCode);
+    }
   }
 
   console.log(`Done! You can find your unminified code in ${outputDir}`);

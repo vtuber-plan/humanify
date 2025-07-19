@@ -60,6 +60,7 @@
     "ipull": "^3.9.0",
     "node-llama-cpp": "^3.0.0-beta.40",
     "openai": "^4.55.1",
+    "source-map": "^0.7.4",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",
     "webcrack": "^2.13.0"
@@ -67,6 +68,7 @@
   "devDependencies": {
     "@eslint/js": "^9.8.0",
     "@types/node": "^22.0.0",
+    "@types/source-map": "^0.5.2",
     "eslint": "^9.8.0",
     "eslint-plugin-unused-imports": "^4.1.2",
     "globals": "^16.0.0",

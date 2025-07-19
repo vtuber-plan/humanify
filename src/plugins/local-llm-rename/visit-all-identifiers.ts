@@ -2,6 +2,7 @@ import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
+import { getGlobalTracker } from "../../sourcemap/ast-position-tracker.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -106,6 +107,12 @@ export async function visitAllIdentifiers(
         safeRenamed = renameConflictIndentier(safeRenamed);
       }
       renames.add(safeRenamed);
+
+      // 记录重命名映射到位置跟踪器
+      const tracker = getGlobalTracker();
+      if (tracker) {
+        tracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
+      }
 
       smallestScope.scope.rename(smallestScopeNode.name, safeRenamed);
     }

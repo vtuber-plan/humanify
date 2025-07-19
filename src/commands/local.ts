@@ -36,6 +36,7 @@ export const local = cli()
     "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
     undefined
   )
+  .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
   .argument("input", "The input minified Javascript file")
   .action(async (filename, opts) => {
     if (opts.verbose) {
@@ -51,8 +52,10 @@ export const local = cli()
       seed: opts.seed ? parseInt(opts.seed) : undefined
     });
     await unminify(filename, opts.outputDir, [
-      babel,
+      (code: string, enableSourceMap?: boolean) => babel(code, enableSourceMap),
       (code: string) => localReanme(prompt, contextWindowSize)(code, opts.resume || !!opts.codePath, opts.codePath),
-      prettier
-    ]);
+      (code: string) => prettier(code)
+    ], {
+      generateSourceMap: opts.sourcemap
+    });
   });
