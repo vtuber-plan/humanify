@@ -8,6 +8,19 @@ export interface ResumeState {
   currentIndex: number;
   totalScopes: number;
   codePath: string;
+  
+  // Tracker状态信息
+  trackerState?: {
+    filePath: string;
+    originalCode: string;
+    renameRecords: Array<{
+      originalName: string;
+      newName: string;
+      scopeId: string;
+      line: number;
+      column: number;
+    }>;
+  };
 }
 
 export async function saveResumeState(

@@ -52,7 +52,7 @@ export const local = cli()
       seed: opts.seed ? parseInt(opts.seed) : undefined
     });
     await unminify(filename, opts.outputDir, [
-      (code: string, enableSourceMap?: boolean) => babel(code, enableSourceMap),
+      (code: string, enableSourceMap?: boolean, filePath?: string) => babel(code, enableSourceMap, filePath),
       (code: string) => localReanme(prompt, contextWindowSize)(code, opts.resume || !!opts.codePath, opts.codePath),
       (code: string) => prettier(code)
     ], {

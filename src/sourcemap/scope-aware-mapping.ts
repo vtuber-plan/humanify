@@ -337,4 +337,17 @@ export class ScopeAwareMappingGenerator {
   getRenameCount(): number {
     return this.renameRecords.length;
   }
+
+  /**
+   * 获取所有重命名记录
+   */
+  getRenameRecords(): Array<{
+    originalName: string;
+    newName: string;
+    scopeId: string;
+    line: number;
+    column: number;
+  }> {
+    return [...this.renameRecords];
+  }
 } 

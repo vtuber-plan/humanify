@@ -1,9 +1,10 @@
 import { transform, PluginItem } from "@babel/core";
-import { getGlobalTracker } from "./sourcemap/ast-position-tracker.js";
+import { getTracker } from "./sourcemap/ast-position-tracker.js";
 
 export interface TransformOptions {
   enableSourceMap?: boolean;
   retainLines?: boolean;
+  filePath?: string; // 添加文件路径参数
 }
 
 export const transformWithPlugins = async (
@@ -11,7 +12,7 @@ export const transformWithPlugins = async (
   plugins: PluginItem[],
   options: TransformOptions = {}
 ): Promise<string> => {
-  const tracker = getGlobalTracker();
+  const tracker = options.filePath ? getTracker(options.filePath) : null;
   
   return await new Promise((resolve, reject) =>
     transform(

@@ -44,7 +44,7 @@ export const openai = cli()
     const baseURL = opts.baseURL;
     const contextWindowSize = parseNumber(opts.contextSize);
     await unminify(filename, opts.outputDir, [
-      (code: string, enableSourceMap?: boolean) => babel(code, enableSourceMap),
+      (code: string, enableSourceMap?: boolean, filePath?: string) => babel(code, enableSourceMap, filePath),
       (code: string) => openaiRename({
         apiKey,
         baseURL,

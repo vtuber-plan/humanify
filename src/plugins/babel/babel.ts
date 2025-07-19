@@ -69,7 +69,7 @@ const makeNumbersLonger: PluginItem = {
   }
 };
 
-export default async (code: string, enableSourceMap: boolean = false): Promise<string> =>
+export default async (code: string, enableSourceMap: boolean = false, filePath?: string): Promise<string> =>
   transformWithPlugins(code, [
     convertVoidToUndefined,
     flipComparisonsTheRightWayAround,
@@ -77,5 +77,6 @@ export default async (code: string, enableSourceMap: boolean = false): Promise<s
     bautifier
   ], {
     enableSourceMap,
-    retainLines: enableSourceMap
+    retainLines: enableSourceMap,
+    filePath
   });

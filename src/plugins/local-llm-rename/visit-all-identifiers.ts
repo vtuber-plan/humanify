@@ -2,7 +2,7 @@ import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
-import { getGlobalTracker } from "../../sourcemap/ast-position-tracker.js";
+import { getGlobalTracker, getTrackerState, restoreTrackerFromState } from "../../sourcemap/ast-position-tracker.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -57,6 +57,16 @@ export async function visitAllIdentifiers(
       visited = new Set(resumeState.visited);
       scopes = await findScopes(ast);
       currentIndex = resumeState.currentIndex;
+      
+      // 恢复tracker状态
+      if (resumeState.trackerState) {
+        try {
+          restoreTrackerFromState(resumeState.trackerState);
+          console.log(`Restored tracker state with ${resumeState.trackerState.renameRecords.length} rename records`);
+        } catch (error) {
+          console.warn("Failed to restore tracker state:", error);
+        }
+      }
       
       console.log(`Resuming from index ${currentIndex}/${scopes.length}`);
     } else {
@@ -124,13 +134,18 @@ export async function visitAllIdentifiers(
       if (!newCodeResult || !newCodeResult.code) {
         throw new Error("Failed to stringify code");
       }
+      
+      // 获取tracker状态
+      const trackerState = getTrackerState(resume || "");
+      
       const resumeState: ResumeState = {
         code: newCodeResult?.code,
         renames: Array.from(renames),
         visited: Array.from(visited),
         currentIndex: i + 1,
         totalScopes: scopes.length,
-        codePath: resume || ""
+        codePath: resume || "",
+        trackerState: trackerState || undefined
       };
       await saveResumeState(resumeState, sessionId);
     }

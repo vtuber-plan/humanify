@@ -9,7 +9,7 @@ import {
   addSourceMapReference,
   SourceMapOptions 
 } from "./sourcemap/sourcemap-generator.js";
-import { initializeTracker, clearGlobalTracker, getGlobalTracker } from "./sourcemap/ast-position-tracker.js";
+import { initializeTracker, clearTracker, getTracker } from "./sourcemap/ast-position-tracker.js";
 
 export interface UnminifyOptions {
   generateSourceMap?: boolean;
@@ -18,7 +18,7 @@ export interface UnminifyOptions {
 export async function unminify(
   filename: string,
   outputDir: string,
-  plugins: ((code: string, enableSourceMap?: boolean) => Promise<string>)[] = [],
+  plugins: ((code: string, enableSourceMap?: boolean, filePath?: string) => Promise<string>)[] = [],
   options: UnminifyOptions = {}
 ) {
   ensureFileExists(filename);
@@ -39,12 +39,12 @@ export async function unminify(
     // 如果启用source map，初始化位置跟踪器
     let tracker = null;
     if (options.generateSourceMap) {
-      tracker = initializeTracker(originalCode);
+      tracker = initializeTracker(file.path, originalCode);
     }
 
-    // 应用所有插件，传递source map启用标志
+    // 应用所有插件，传递source map启用标志和文件路径
     const formattedCode = await plugins.reduce(
-      (p, next) => p.then(code => next(code, options.generateSourceMap)),
+      (p, next) => p.then(code => next(code, options.generateSourceMap, file.path)),
       Promise.resolve(originalCode)
     );
 
@@ -80,7 +80,7 @@ export async function unminify(
       console.log(`Generated source map: ${sourceMapPath} with ${mappings.length} mappings`);
       
       // 清理跟踪器
-      clearGlobalTracker();
+      clearTracker(file.path);
     } else {
       await fs.writeFile(file.path, formattedCode);
     }
