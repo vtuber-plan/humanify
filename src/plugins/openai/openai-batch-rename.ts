@@ -185,7 +185,7 @@ export function openaiBatchRename({
   });
   const client = new OpenAI(clientOptions);
 
-  return async (code: string): Promise<string> => {
+  return async (code: string, filePath?: string): Promise<string> => {
     const startTime = Date.now();
     return await batchVisitAllIdentifiersGrouped(
       code,
@@ -281,6 +281,8 @@ export function openaiBatchRename({
       (percentage) => showPercentage(percentage, startTime),
       resume,
       batchSize,
+      0.7,
+      filePath
     );
   };
 }

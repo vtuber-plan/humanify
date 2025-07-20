@@ -2,14 +2,15 @@ import * as t from '@babel/types';
 import { NodePath } from '@babel/core';
 import { TokenMapping } from './sourcemap-generator.js';
 import { ScopeAwareMappingGenerator } from './scope-aware-mapping.js';
+import { verbose } from '../verbose.js';
 
 /**
  * AST节点位置跟踪器
  * 用于在Babel变换过程中记录原始代码和生成代码之间的位置映射
  */
 export class ASTPositionTracker {
-  private scopeAwareMappingGenerator: ScopeAwareMappingGenerator;
-  private originalCode: string;
+  public scopeAwareMappingGenerator: ScopeAwareMappingGenerator;
+  public originalCode: string;
   
   constructor(originalCode: string) {
     this.originalCode = originalCode;
@@ -54,28 +55,11 @@ export class ASTPositionTracker {
   }
 
   /**
-   * 记录一般的AST节点映射
-   * @param originalNode 原始节点
-   * @param generatedNode 生成的节点
-   */
-  recordNodeMapping(originalNode: t.Node, generatedNode: t.Node): void {
-    // 这个方法现在不需要实现，因为我们使用作用域感知映射生成器
-  }
-
-  /**
    * 根据生成的代码生成精确映射
    * @param generatedCode 生成的代码
    */
   generateMappings(generatedCode: string): TokenMapping[] {
     return this.scopeAwareMappingGenerator.generateMappings(this.originalCode, generatedCode);
-  }
-
-  /**
-   * 获取所有映射（向后兼容）
-   */
-  getMappings(): TokenMapping[] {
-    // 这个方法需要在调用前先调用generateMappings
-    return [];
   }
 
   /**

@@ -53,10 +53,8 @@ export async function batchVisitAllIdentifiers(
 
   const sessionId = resume;
   
-  // 初始化tracker（如果有文件路径）
-  if (filePath) {
-    initializeTracker(filePath, code);
-  }
+  // 获取已存在的tracker（如果有文件路径），不重新初始化
+  const existingTracker = filePath ? getTracker(filePath) : null;
   
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
@@ -131,12 +129,9 @@ export async function batchVisitAllIdentifiers(
       }
       renames.add(safeRenamed);
 
-      // 记录重命名映射到位置跟踪器
-      if (filePath) {
-        const tracker = getTracker(filePath);
-        if (tracker) {
-          tracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
-        }
+      // 记录重命名映射到位置跟踪器（使用已存在的tracker）
+      if (filePath && existingTracker) {
+        existingTracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
       }
 
       smallestScope.scope.rename(smallestScopeNode.name, safeRenamed);
@@ -199,10 +194,8 @@ export async function batchVisitAllIdentifiersGrouped(
 
   const sessionId = resume;
   
-  // 初始化tracker（如果有文件路径）
-  if (filePath) {
-    initializeTracker(filePath, code);
-  }
+  // 获取已存在的tracker（如果有文件路径），不重新初始化
+  const existingTracker = filePath ? getTracker(filePath) : null;
   
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
@@ -283,21 +276,18 @@ export async function batchVisitAllIdentifiersGrouped(
         }
         renames.add(safeRenamed);
 
-        // 记录重命名映射到位置跟踪器
-        if (filePath) {
-          const tracker = getTracker(filePath);
-          if (tracker) {
-            // 记录声明位置
-            tracker.recordIdentifierRename(identifier, originalName, safeRenamed);
-            
-            // 记录该作用域中所有同名标识符的位置
-            const binding = identifier.scope.getBinding(originalName);
-            if (binding) {
-              // 遍历所有引用
-              for (const referencePath of binding.referencePaths) {
-                if (referencePath.node !== identifier.node && referencePath.isIdentifier()) { // 避免重复记录声明
-                  tracker.recordIdentifierRename(referencePath, originalName, safeRenamed);
-                }
+        // 记录重命名映射到位置跟踪器（使用已存在的tracker）
+        if (filePath && existingTracker) {
+          // 记录声明位置
+          existingTracker.recordIdentifierRename(identifier, originalName, safeRenamed);
+          
+          // 记录该作用域中所有同名标识符的位置
+          const binding = identifier.scope.getBinding(originalName);
+          if (binding) {
+            // 遍历所有引用
+            for (const referencePath of binding.referencePaths) {
+              if (referencePath.node !== identifier.node && referencePath.isIdentifier()) { // 避免重复记录声明
+                existingTracker.recordIdentifierRename(referencePath, originalName, safeRenamed);
               }
             }
           }

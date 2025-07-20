@@ -9,7 +9,7 @@ import {
   addSourceMapReference,
   SourceMapOptions 
 } from "./sourcemap/sourcemap-generator.js";
-import { initializeTracker, clearTracker, getTracker } from "./sourcemap/ast-position-tracker.js";
+import { initializeTracker, clearTracker, getTracker, getTrackerState } from "./sourcemap/ast-position-tracker.js";
 
 export interface UnminifyOptions {
   generateSourceMap?: boolean;
@@ -61,8 +61,13 @@ export async function unminify(
         outputDir: outputDir
       };
 
+      // 调试：检查tracker状态
+      const trackerState = getTrackerState(file.path);
+      verbose.log(`Before generating source map, tracker has ${trackerState?.renameRecords?.length || 0} rename records`);
+
       // 使用跟踪器生成精确的映射
       const mappings = tracker.generateMappings(formattedCode);
+      verbose.log(`Generated ${mappings.length} mappings for source map`);
       const sourceMapContent = await generateSourceMap(
         originalCode,
         formattedCode,

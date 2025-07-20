@@ -3,6 +3,7 @@ import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
 import { initializeTracker, getTracker, getTrackerState, restoreTrackerFromState } from "../../sourcemap/ast-position-tracker.js";
+import { verbose } from "../../verbose.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -51,11 +52,9 @@ export async function visitAllIdentifiers(
 
   const sessionId = resume;
   
-  // 初始化tracker（如果有文件路径）
-  if (filePath) {
-    initializeTracker(filePath, code);
-  }
-  
+  // 获取已存在的tracker（如果有文件路径），不重新初始化
+  const existingTracker = filePath ? getTracker(filePath) : null;
+
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
     const resumeState = await loadResumeState(sessionId);
@@ -129,12 +128,16 @@ export async function visitAllIdentifiers(
       }
       renames.add(safeRenamed);
 
-      // 记录重命名映射到位置跟踪器
-      if (filePath) {
-        const tracker = getTracker(filePath);
-        if (tracker) {
-          tracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
-        }
+      // 记录重命名映射到位置跟踪器（使用已存在的tracker）
+      if (filePath && existingTracker) {
+        verbose.log(`Recording rename: ${smallestScopeNode.name} -> ${safeRenamed}`);
+        existingTracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
+        
+        // 调试：检查记录后的状态
+        const trackerState = getTrackerState(filePath);
+        verbose.log(`After recording rename, tracker has ${trackerState?.renameRecords.length || 0} records`);
+      } else {
+        verbose.log(`Skipping tracker record: filePath=${filePath}, existingTracker=${!!existingTracker}`);
       }
 
       smallestScope.scope.rename(smallestScopeNode.name, safeRenamed);

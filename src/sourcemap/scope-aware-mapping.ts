@@ -2,6 +2,7 @@ import { parse } from '@babel/parser';
 import * as babelTraverse from '@babel/traverse';
 import * as t from '@babel/types';
 import { TokenMapping } from './sourcemap-generator.js';
+import { verbose } from '../verbose.js';
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -40,7 +41,7 @@ interface RenameRecord {
  * 作用域感知的source-map映射生成器
  */
 export class ScopeAwareMappingGenerator {
-  private renameRecords: RenameRecord[] = [];
+  public renameRecords: RenameRecord[] = [];
 
   /**
    * 记录变量重命名，包含作用域信息

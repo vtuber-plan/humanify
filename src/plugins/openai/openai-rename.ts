@@ -27,7 +27,7 @@ export function openaiRename({
   });
   const client = new OpenAI(clientOptions);
 
-  return async (code: string): Promise<string> => {
+  return async (code: string, filePath?: string): Promise<string> => {
     const startTime = Date.now();
     return await visitAllIdentifiers(
       code,
@@ -119,6 +119,7 @@ export function openaiRename({
       contextWindowSize,
       (percentage) => showPercentage(percentage, startTime),
       resume,
+      filePath
     );
   };
 }
