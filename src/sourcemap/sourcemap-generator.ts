@@ -1,6 +1,7 @@
 import { SourceMapGenerator, Position } from 'source-map';
 import fs from 'fs/promises';
 import path from 'path';
+import { verbose } from '../verbose.js';
 
 export interface SourceMapOptions {
   originalFile: string;

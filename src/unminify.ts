@@ -18,12 +18,14 @@ export interface UnminifyOptions {
 export async function unminify(
   filename: string,
   outputDir: string,
-  plugins: ((code: string, enableSourceMap?: boolean, filePath?: string) => Promise<string>)[] = [],
+  plugins: ((code: string, filePath?: string) => Promise<string>)[] = [],
   options: UnminifyOptions = {}
 ) {
   ensureFileExists(filename);
   const bundledCode = await fs.readFile(filename, "utf-8");
   const extractedFiles = await webcrack(bundledCode, outputDir);
+
+  verbose.log("Extracted files: ", extractedFiles);
 
   for (let i = 0; i < extractedFiles.length; i++) {
     console.log(`Processing file ${i + 1}/${extractedFiles.length}`);
@@ -44,7 +46,7 @@ export async function unminify(
 
     // 应用所有插件，传递source map启用标志和文件路径
     const formattedCode = await plugins.reduce(
-      (p, next) => p.then(code => next(code, options.generateSourceMap, file.path)),
+      (p, next) => p.then(code => next(code, file.path)),
       Promise.resolve(originalCode)
     );
 
@@ -73,17 +75,14 @@ export async function unminify(
 
       await saveSourceMap(sourceMapContent, sourceMapPath);
 
-      // 为生成的代码添加source map引用
-      const codeWithSourceMap = addSourceMapReference(formattedCode, sourceMapFileName);
-      await fs.writeFile(file.path, codeWithSourceMap);
-
       console.log(`Generated source map: ${sourceMapPath} with ${mappings.length} mappings`);
       
       // 清理跟踪器
       clearTracker(file.path);
-    } else {
-      await fs.writeFile(file.path, formattedCode);
     }
+
+    // 为生成的代码添加source map引用（在所有插件处理完成后）
+    await fs.writeFile(file.path, formattedCode);
   }
 
   console.log(`Done! You can find your unminified code in ${outputDir}`);

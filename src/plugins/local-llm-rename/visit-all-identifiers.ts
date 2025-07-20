@@ -2,7 +2,7 @@ import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
-import { getGlobalTracker, getTrackerState, restoreTrackerFromState } from "../../sourcemap/ast-position-tracker.js";
+import { initializeTracker, getTracker, getTrackerState, restoreTrackerFromState } from "../../sourcemap/ast-position-tracker.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -23,11 +23,16 @@ function getSuffixNumber(name: string): number {
 
 
 function renameConflictIndentier(name: string): string {
-  if (endWithNumber(name)) {
-    const suffixNumber = getSuffixNumber(name);
-    return name.replace(/(\d+)$/, (match) => (parseInt(match, 10) + 1).toString());
+  // 如果已经以下划线开头，则添加数字后缀
+  if (name.startsWith('_')) {
+    if (endWithNumber(name)) {
+      const suffixNumber = getSuffixNumber(name);
+      return name.replace(/(\d+)$/, (match) => (parseInt(match, 10) + 1).toString());
+    }
+    return `${name}1`;
   }
-  return `${name}1`;
+  // 否则添加下划线前缀
+  return `_${name}`;
 }
 
 export async function visitAllIdentifiers(
@@ -35,7 +40,8 @@ export async function visitAllIdentifiers(
   visitor: Visitor,
   contextWindowSize: number,
   onProgress?: (percentageDone: number) => void,
-  resume?: string
+  resume?: string,
+  filePath?: string
 ): Promise<string> {
   let ast: Node | null;
   let renames: Set<string>;
@@ -44,6 +50,11 @@ export async function visitAllIdentifiers(
   let currentIndex = 0;
 
   const sessionId = resume;
+  
+  // 初始化tracker（如果有文件路径）
+  if (filePath) {
+    initializeTracker(filePath, code);
+  }
   
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
@@ -119,9 +130,11 @@ export async function visitAllIdentifiers(
       renames.add(safeRenamed);
 
       // 记录重命名映射到位置跟踪器
-      const tracker = getGlobalTracker();
-      if (tracker) {
-        tracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
+      if (filePath) {
+        const tracker = getTracker(filePath);
+        if (tracker) {
+          tracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
+        }
       }
 
       smallestScope.scope.rename(smallestScopeNode.name, safeRenamed);
@@ -136,7 +149,7 @@ export async function visitAllIdentifiers(
       }
       
       // 获取tracker状态
-      const trackerState = getTrackerState(resume || "");
+      const trackerState = filePath ? getTrackerState(filePath) : null;
       
       const resumeState: ResumeState = {
         code: newCodeResult?.code,

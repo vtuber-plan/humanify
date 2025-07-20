@@ -1,15 +1,16 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { visitAllIdentifiers } from "../local-llm-rename/visit-all-identifiers.js";
+import { batchVisitAllIdentifiersGrouped } from "../local-llm-rename/batch-visit-all-indentifiers.js";
 import { showPercentage } from "../../progress.js";
 import { verbose } from "../../verbose.js";
 import { createClientOptions } from "../../proxy-utils.js";
 
-export function anthropicRename({
+export function anthropicBatchRename({
     apiKey,
     baseURL,
     model,
     contextWindowSize,
     resume = undefined,
+    batchSize = 10,
     systemPrompt = undefined,
 }: {
     apiKey: string;
@@ -17,6 +18,7 @@ export function anthropicRename({
     model: string;
     contextWindowSize: number;
     resume?: string;
+    batchSize?: number;
     systemPrompt?: string;
 }) {
     const clientOptions = createClientOptions(baseURL || 'https://api.anthropic.com', {
@@ -26,38 +28,49 @@ export function anthropicRename({
     const client = new Anthropic(clientOptions);
 
     return async (code: string): Promise<string> => {
-        return await visitAllIdentifiers(
+        const startTime = Date.now();
+        return await batchVisitAllIdentifiersGrouped(
             code,
-            async (name, surroundingCode) => {
-                verbose.log(`Renaming ${name}`);
+            async (names, surroundingCode) => {
+                verbose.log(`Batch renaming: ${names.join(", ")}`);
                 verbose.log("Context: ", surroundingCode);
 
                 const response = await client.messages.create(
-                    toRenamePrompt(name, surroundingCode, model, contextWindowSize, systemPrompt)
-                );
+                    toBatchRenamePrompt(names, surroundingCode, model, contextWindowSize, systemPrompt)
+                ) as Anthropic.Messages.Message;
 
                 const result = response.content[0];
                 if (!result) {
                     throw new Error('Failed to rename', { cause: response });
                 }
-                const renamed = result.input.newName
-                verbose.log(`${name} renamed to ${renamed}`);
-                return renamed;
+                
+                const renameMap = (result as any).input;
+                verbose.log(`Batch renamed:`, renameMap);
+                return renameMap;
             },
             contextWindowSize,
-            showPercentage,
-            resume
+            (percentage) => showPercentage(percentage, startTime),
+            resume,
+            batchSize
         );
     };
 }
 
-function toRenamePrompt(
-    name: string,
+function toBatchRenamePrompt(
+    names: string[],
     surroundingCode: string,
     model: string,
     contextWindowSize: number,
     systemPrompt?: string,
 ): Anthropic.Messages.MessageCreateParams {
+    const properties: Record<string, any> = {};
+    names.forEach(name => {
+        properties[name] = {
+            type: "string",
+            description: `The new descriptive name for the variable/function called \`${name}\``
+        };
+    });
+
     const defaultSystemPrompt = `You are a helpful assistant that renames Javascript variables and functions to have more descriptive names based on their usage in the code.`;
     const finalSystemPrompt = systemPrompt ? `${systemPrompt}\n\n${defaultSystemPrompt}` : defaultSystemPrompt;
     
@@ -70,7 +83,7 @@ function toRenamePrompt(
     }
     messages.push({
         role: "user" as const,
-        content: `Analyze this code and suggest a descriptive name for the variable/function \`${name}\`:
+        content: `Analyze this code and suggest descriptive names for the variables/functions: \`${names.join(", ")}\`:
         ${surroundingCode}`
     });
     
@@ -80,24 +93,19 @@ function toRenamePrompt(
         max_tokens: contextWindowSize,
         tools: [
             {
-                name: "suggest_name",
-                description: "Suggest a descriptive name for the code element",
+                name: "suggest_names",
+                description: "Suggest descriptive names for the code elements",
                 input_schema: {
                     type: "object",
-                    properties: {
-                        newName: {
-                            type: "string",
-                            description: `The new descriptive name for the variable/function called \`${name}\``
-                        }
-                    },
-                    required: ["newName"],
+                    properties,
+                    required: names,
                     additionalProperties: false
                 }
             }
         ],
         tool_choice: {
             type: "tool",
-            name: "suggest_name"
+            name: "suggest_names"
         }
     };
-}
+} 

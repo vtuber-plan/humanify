@@ -1,4 +1,4 @@
-import { visitAllIdentifiers } from "../local-llm-rename/visit-all-identifiers.js";
+import { batchVisitAllIdentifiersGrouped } from "../local-llm-rename/batch-visit-all-indentifiers.js";
 import { verbose } from "../../verbose.js";
 import { showPercentage } from "../../progress.js";
 import {
@@ -6,19 +6,20 @@ import {
   ModelParams,
   SchemaType
 } from "@google/generative-ai";
-import { createClientOptions } from "../../proxy-utils.js";
 
-export function geminiRename({
+export function geminiBatchRename({
   apiKey,
   model: modelName,
   contextWindowSize,
   resume = undefined,
+  batchSize = 10,
   systemPrompt = undefined,
 }: {
   apiKey: string;
   model: string;
   contextWindowSize: number;
   resume?: string;
+  batchSize?: number;
   systemPrompt?: string;
 }) {
   // Google Generative AI client doesn't support custom HTTP agents directly
@@ -27,33 +28,42 @@ export function geminiRename({
 
   return async (code: string): Promise<string> => {
     const startTime = Date.now();
-    return await visitAllIdentifiers(
+    return await batchVisitAllIdentifiersGrouped(
       code,
-      async (name, surroundingCode) => {
-        verbose.log(`Renaming ${name}`);
+      async (names, surroundingCode) => {
+        verbose.log(`Batch renaming: ${names.join(", ")}`);
         verbose.log("Context: ", surroundingCode);
 
         const model = client.getGenerativeModel(
-          toRenameParams(name, modelName, systemPrompt)
+          toBatchRenameParams(names, modelName, systemPrompt)
         );
 
         const result = await model.generateContent(surroundingCode);
+        const renameMap = JSON.parse(result.response.text());
 
-        const renamed = JSON.parse(result.response.text()).newName;
+        verbose.log(`Batch renamed:`, renameMap);
 
-        verbose.log(`Renamed to ${renamed}`);
-
-        return renamed;
+        return renameMap;
       },
       contextWindowSize,
       (percentage) => showPercentage(percentage, startTime),
-      resume
+      resume,
+      batchSize
     );
   };
 }
 
-function toRenameParams(name: string, model: string, systemPrompt?: string): ModelParams {
-  const defaultSystemPrompt = `Rename Javascript variables/function \`${name}\` to have descriptive name based on their usage in the code.`;
+function toBatchRenameParams(names: string[], model: string, systemPrompt?: string): ModelParams {
+  const properties: Record<string, any> = {};
+  names.forEach(name => {
+    properties[name] = {
+      type: SchemaType.STRING,
+      nullable: false,
+      description: `The new descriptive name for the variable/function called \`${name}\``
+    };
+  });
+
+  const defaultSystemPrompt = `Rename the following Javascript variables/functions: \`${names.join(", ")}\` to have descriptive names based on their usage in the code.`;
   const finalSystemPrompt = systemPrompt ? `${systemPrompt}\n\n${defaultSystemPrompt}` : defaultSystemPrompt;
   
   return {
@@ -63,17 +73,11 @@ function toRenameParams(name: string, model: string, systemPrompt?: string): Mod
       responseMimeType: "application/json",
       responseSchema: {
         nullable: false,
-        description: "The new name for the variable/function",
+        description: "The new names for the variables/functions",
         type: SchemaType.OBJECT,
-        properties: {
-          newName: {
-            type: SchemaType.STRING,
-            nullable: false,
-            description: `The new name for the variable/function called \`${name}\``
-          }
-        },
-        required: ["newName"]
+        properties,
+        required: names
       }
     }
   };
-}
+} 

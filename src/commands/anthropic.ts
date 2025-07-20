@@ -4,6 +4,7 @@ import { unminify } from "../unminify.js";
 import babel from "../plugins/babel/babel.js";
 import { verbose } from "../verbose.js";
 import { anthropicRename } from "../plugins/anthropic/anthropic-rename.js";
+import { anthropicBatchRename } from "../plugins/anthropic/anthropic-batch-rename.js";
 import { env } from "../env.js";
 import { parseNumber } from "../number-utils.js";
 import { DEFAULT_CONTEXT_WINDOW_SIZE } from "./default-args.js";
@@ -28,13 +29,24 @@ export const anthropic = cli()
         "The context size to use for the LLM",
         `${DEFAULT_CONTEXT_WINDOW_SIZE}`
     )
-      .option(
-    "--resume <resume>",
-    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
-    undefined
-  )
-  .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
-  .argument("input", "The input minified Javascript file")
+    .option(
+        "--resume <resume>",
+        "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+        undefined
+    )
+    .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
+    .option("--batch", "Enable batch renaming mode for more efficient processing", false)
+    .option(
+        "--batchSize <batchSize>",
+        "Maximum number of variables to rename in a single batch (default: 10)",
+        "10"
+    )
+    .option(
+        "--systemPrompt <systemPrompt>",
+        "Custom system prompt to describe the project context and purpose for better variable renaming",
+        undefined
+    )
+    .argument("input", "The input minified Javascript file")
     .action(async (filename, opts) => {
         if (opts.verbose) {
             verbose.enabled = true;
@@ -42,16 +54,37 @@ export const anthropic = cli()
         const apiKey = opts.apiKey ?? env("ANTHROPIC_API_KEY");
         const baseURL = opts.baseURL;
         const contextWindowSize = parseNumber(opts.contextSize);
+        const batchSize = parseNumber(opts.batchSize);
 
-        await unminify(filename, opts.outputDir, [
-            (code: string, enableSourceMap?: boolean, filePath?: string) => babel(code, enableSourceMap, filePath),
-            (code: string) => anthropicRename({
+        // 根据batch参数选择使用普通重命名还是批量重命名
+        const renameFunction = opts.batch 
+            ? anthropicBatchRename({
                 apiKey,
                 baseURL,
                 model: opts.model,
                 contextWindowSize,
-                resume: opts.resume
-            })(code),
+                resume: opts.resume,
+                batchSize,
+                systemPrompt: opts.systemPrompt
+            })
+            : anthropicRename({
+                apiKey,
+                baseURL,
+                model: opts.model,
+                contextWindowSize,
+                resume: opts.resume,
+                systemPrompt: opts.systemPrompt
+            });
+
+        if (opts.batch) {
+            verbose.log("Using batch renaming mode");
+        } else {
+            verbose.log("Using standard renaming mode");
+        }
+
+        await unminify(filename, opts.outputDir, [
+            (code: string, enableSourceMap?: boolean, filePath?: string) => babel(code, enableSourceMap, filePath),
+            (code: string) => renameFunction(code),
             (code: string) => prettier(code)
         ], {
             generateSourceMap: opts.sourcemap

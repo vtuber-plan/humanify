@@ -167,8 +167,41 @@ the GPU capabilities of your Mac.
 The main features of the tool are:
 * Uses ChatGPT functions/local models to get smart suggestions to rename
   variable and function names
+* **NEW: Batch renaming** - Groups identifiers by scope for more efficient and context-aware renaming
 * Uses custom and off-the-shelf Babel plugins to perform AST-level unmanging
 * Uses Webcrack to unbundle Webpack bundles
+
+### Batch Renaming Feature
+
+The new batch renaming feature groups identifiers that share the same surrounding code context and renames them together. This approach:
+
+- **Reduces API calls** by processing multiple variables in a single request
+- **Improves context understanding** by considering relationships between variables
+- **Generates more meaningful names** based on complete scope context
+- **Maintains semantic relationships** between related variables
+
+To use batch renaming:
+
+```bash
+# Using the CLI tool with batch renaming
+humanify openai --batch obfuscated-file.js
+humanify gemini --batch --apiKey="your-key" obfuscated-file.js  
+humanify anthropic --batch --apiKey="your-key" obfuscated-file.js
+
+# Standard renaming (without --batch flag)
+humanify openai obfuscated-file.js
+
+# Or using the programmatic API
+import { openaiBatchRename } from './src/plugins/openai/batch-openai-rename.js';
+
+const renamedCode = await openaiBatchRename({
+  apiKey: 'your-api-key',
+  model: 'gpt-3.5-turbo',
+  contextWindowSize: 1000
+})(code);
+```
+
+See [Batch Rename Documentation](docs/batch-rename.md) for detailed usage instructions.
 
 ## Contributing
 

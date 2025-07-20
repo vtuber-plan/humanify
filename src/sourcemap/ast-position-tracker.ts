@@ -313,24 +313,4 @@ export function restoreTrackerFromState(trackerState: {
   }>;
 }): ASTPositionTracker {
   return trackerManager.restoreTrackerFromState(trackerState);
-}
-
-// 向后兼容的全局跟踪器API（已废弃，建议使用新的文件特定API）
-let legacyGlobalTracker: ASTPositionTracker | null = null;
-
-/**
- * @deprecated 使用 initializeTracker(filePath, originalCode) 替代
- */
-export function getGlobalTracker(): ASTPositionTracker | null {
-  return legacyGlobalTracker;
-}
-
-/**
- * @deprecated 使用 clearTracker(filePath) 替代
- */
-export function clearGlobalTracker(): void {
-  if (legacyGlobalTracker) {
-    legacyGlobalTracker.clear();
-    legacyGlobalTracker = null;
-  }
 } 
