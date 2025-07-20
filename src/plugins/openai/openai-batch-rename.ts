@@ -192,8 +192,56 @@ export function openaiBatchRename({
       async (names, surroundingCode) => {
         verbose.log(`Batch renaming: ${names.join(", ")}`);
         verbose.log("Context: ", surroundingCode);
+        
+        // if xxx = "", use regex
+        if (surroundingCode.trim().match(/^[a-zA-Z0-9_]+ = ".*"/)) {
+          return names.reduce((acc, name) => {
+            acc[name] = name;
+            return acc;
+          }, {} as Record<string, string>);
+        }
 
-        // 封装一次LLM请求和解析的逻辑，便于重试
+        // if [xxx], use regex
+        if (surroundingCode.trim().match(/^\[[a-zA-Z0-9_]+\]$/)) {
+          return names.reduce((acc, name) => {
+            acc[name] = name;
+            return acc;
+          }, {} as Record<string, string>);
+        }
+
+        // if function U() {}, use regex
+        if (surroundingCode.trim().match(/^function [a-zA-Z0-9_]+\(\) \{.*\}$/)) {
+          return names.reduce((acc, name) => {
+            acc[name] = name;
+            return acc;
+          }, {} as Record<string, string>);
+        }
+
+        // if function U(xxx) {}, use regex
+        if (surroundingCode.trim().match(/^function [a-zA-Z0-9_]+\([a-zA-Z0-9_]+\) \{.*\}$/)) {
+          return names.reduce((acc, name) => {
+            acc[name] = name;
+            return acc;
+          }, {} as Record<string, string>);
+        }
+
+        // if catch (xxx) {}
+        if (surroundingCode.trim().match(/^catch \([a-zA-Z0-9_]+\) \{.*\}$/)) {
+          return names.reduce((acc, name) => {
+            acc[name] = name;
+            return acc;
+          }, {} as Record<string, string>);
+        }
+
+
+        // context too small if , 例如E = {}，[A]，D=[]
+        if (surroundingCode.replace(/\s/g, '').length < 10) {
+          return names.reduce((acc, name) => {
+            acc[name] = name;
+            return acc;
+          }, {} as Record<string, string>);
+        }
+
         async function getBatchRenamed(promptParams: { names: string[]; surroundingCode: string; model: string; extraPrompt?: string; systemPrompt?: string }, rawResult?: string): Promise<Record<string, string>> {
           if (rawResult) {
             return extractBatchJsonResponse(rawResult);
@@ -222,7 +270,6 @@ export function openaiBatchRename({
               }
             }
 
-            // 流结束后处理完整内容
             verbose.log("Stream result:", fullContent);
             return extractBatchJsonResponse(fullContent);
           } catch (error) {

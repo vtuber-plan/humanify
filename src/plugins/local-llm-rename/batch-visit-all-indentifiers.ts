@@ -208,17 +208,36 @@ export async function batchVisitAllIdentifiersGrouped(
     scopes = await findScopes(ast);
   }
 
-  // 按surroundingCode分组identifier
-  const groupedScopes = await groupIdentifiersByScope(scopes, contextWindowSize, maxBatchSize, overlapThreshold);
-  const numGroups = groupedScopes.length;
-
-  // Process groups
-  for (let i = currentIndex; i < groupedScopes.length; i++) {
-    const group = groupedScopes[i];
+  // 按位置先后找到scopes，然后按作用域分组，最后按作用域范围从小到大排序组
+  const groupedScopes = groupByScopePosition(scopes);
+  const sortedGroups = sortGroupsByScopeSize(groupedScopes);
+  
+  // 预计算总组数用于进度跟踪
+  let totalGroups = 0;
+  for (const group of sortedGroups) {
+    const batchCount = Math.ceil(group.identifiers.length / maxBatchSize);
+    totalGroups += batchCount;
+  }
+  
+  let processedCount = 0;
+  let groupIndex = 0;
+  const groupGenerator = splitOversizedGroupsGenerator(sortedGroups, contextWindowSize, maxBatchSize);
+  
+  // Process groups in scope size order (smallest to largest)
+  for await (const group of groupGenerator) {
+    if (processedCount < currentIndex) {
+      processedCount++;
+      groupIndex++;
+      continue;
+    }
     
     // 检查是否已经处理过这个组中的所有identifier
     const unvisitedIdentifiers = group.identifiers.filter(id => !hasVisited(id, visited));
-    if (unvisitedIdentifiers.length === 0) continue;
+    if (unvisitedIdentifiers.length === 0) {
+      processedCount++;
+      groupIndex++;
+      continue;
+    }
 
     // 去重：确保每个变量名在批次中只出现一次
     const uniqueIdentifierNames = [...new Set(unvisitedIdentifiers.map(id => id.node.name))];
@@ -247,8 +266,11 @@ export async function batchVisitAllIdentifiersGrouped(
       markVisited(identifier, originalName, visited);
     }
 
+    processedCount++;
+    groupIndex++;
+
     // Save progress periodically
-    if (sessionId && (i % 5 === 0 || i === groupedScopes.length - 1)) {
+    if (sessionId && (groupIndex % 5 === 0 || groupIndex === totalGroups)) {
       const newCodeResult = await transformFromAstAsync(ast);
       if (!newCodeResult || !newCodeResult.code) {
         throw new Error("Failed to stringify code");
@@ -258,14 +280,14 @@ export async function batchVisitAllIdentifiersGrouped(
         code: newCodeResult?.code,
         renames: Array.from(renames),
         visited: Array.from(visited),
-        currentIndex: i + 1,
-        totalScopes: groupedScopes.length,
+        currentIndex: processedCount,
+        totalScopes: totalGroups,
         codePath: resume || ""
       };
       await saveResumeState(resumeState, sessionId);
     }
 
-    onProgress?.(visited.size / numGroups);
+    onProgress?.(groupIndex / totalGroups);
   }
   onProgress?.(1);
 
@@ -281,20 +303,38 @@ export async function batchVisitAllIdentifiersGrouped(
   return stringified.code;
 }
 
+// 分离作用域查找和排序逻辑
 function findScopes(ast: Node): NodePath<Identifier>[] {
-  const scopes: [nodePath: NodePath<Identifier>, scopeSize: number][] = [];
+  const scopes: NodePath<Identifier>[] = [];
   traverse(ast, {
     BindingIdentifier(path) {
-      const bindingBlock = closestSurroundingContextPath(path).scope.block;
-      const pathSize = bindingBlock.end! - bindingBlock.start!;
-
-      scopes.push([path, pathSize]);
+      scopes.push(path);
     }
   });
 
-  scopes.sort((a, b) => b[1] - a[1]);
+  // 先按位置先后排序（文件中的出现顺序）
+  scopes.sort((a, b) => {
+    const aStart = a.node.start || 0;
+    const bStart = b.node.start || 0;
+    return aStart - bStart;
+  });
 
-  return scopes.map(([nodePath]) => nodePath);
+  return scopes;
+}
+
+// 获取作用域范围大小用于排序
+function getScopeSize(scope: NodePath<Identifier>): number {
+  const bindingBlock = closestSurroundingContextPath(scope).scope.block;
+  return bindingBlock.end! - bindingBlock.start!;
+}
+
+// 按作用域范围从小到大排序组
+function sortGroupsByScopeSize(groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>): Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }> {
+  return groups.sort((a, b) => {
+    const sizeA = getScopeSize(a.identifiers[0]);
+    const sizeB = getScopeSize(b.identifiers[0]);
+    return sizeA - sizeB; // 从小到大排序
+  });
 }
 
 function hasVisited(path: NodePath<Identifier>, visited: Set<string>) {
@@ -312,147 +352,129 @@ function markVisited(
 async function scopeToString(
   path: NodePath<Identifier>,
   contextWindowSize: number
-) {
+): Promise<string> {
   const surroundingPath = closestSurroundingContextPath(path);
-  const code = `${surroundingPath}`; // Implements a hidden `.toString()`
-  if (code.length < contextWindowSize) {
-    return code;
-  }
-  if (surroundingPath.isProgram()) {
-    const start = path.node.start ?? 0;
-    const end = path.node.end ?? code.length;
-    if (end < contextWindowSize / 2) {
-      return code.slice(0, contextWindowSize);
-    }
-    if (start > code.length - contextWindowSize / 2) {
-      return code.slice(-contextWindowSize);
-    }
+  
+  // 获取代码字符串，但限制大小
+  const codeStr = `${surroundingPath}`;
+  const maxLen = Math.min(codeStr.length, contextWindowSize);
+  
+  // 直接返回切片后的字符串，避免中间大字符串
+  return codeStr.slice(0, maxLen);
+}
 
-    return code.slice(
-      start - contextWindowSize / 2,
-      end + contextWindowSize / 2
-    );
-  } else {
-    return code.slice(0, contextWindowSize);
+// 第一步：按作用域位置分组identifier
+function groupByScopePosition(
+  scopes: NodePath<Identifier>[]
+): Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }> {
+  const scopeGroups = new Map<string, NodePath<Identifier>[]>();
+  
+  for (const scope of scopes) {
+    const scopeKey = getScopePositionKey(scope);
+    
+    if (!scopeGroups.has(scopeKey)) {
+      scopeGroups.set(scopeKey, []);
+    }
+    scopeGroups.get(scopeKey)!.push(scope);
+  }
+  
+  return Array.from(scopeGroups.entries()).map(([scopeKey, identifiers]) => ({
+    identifiers,
+    scopeKey
+  }));
+}
+
+// 第二步：将过大的组切分为多个批次（流式处理，减少内存占用）
+async function* splitOversizedGroupsGenerator(
+  groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
+  contextWindowSize: number,
+  maxBatchSize: number = 10
+): AsyncIterableIterator<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }> {
+  for (const group of groups) {
+    const { identifiers, scopeKey } = group;
+    
+    // 如果组大小未超过限制，直接生成
+    if (identifiers.length <= maxBatchSize) {
+      const surroundingCode = await scopeToString(identifiers[0], contextWindowSize);
+      yield {
+        identifiers,
+        scopeKey,
+        surroundingCode
+      };
+    } else {
+      // 超过批次大小，按批次流式生成
+      for (let i = 0; i < identifiers.length; i += maxBatchSize) {
+        const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
+        const surroundingCode = await scopeToString(batchIdentifiers[0], contextWindowSize);
+        yield {
+          identifiers: batchIdentifiers,
+          scopeKey: `${scopeKey}_${i}`,
+          surroundingCode
+        };
+      }
+    }
   }
 }
 
-// 按surroundingCode分组identifier的辅助函数
+// 同步版本的splitOversizedGroups用于旧的groupIdentifiersByScope
+async function splitOversizedGroups(
+  groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
+  contextWindowSize: number,
+  maxBatchSize: number = 10
+): Promise<Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }>> {
+  const result: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }> = [];
+  
+  for (const group of groups) {
+    const { identifiers, scopeKey } = group;
+    
+    if (identifiers.length <= maxBatchSize) {
+      const surroundingCode = await scopeToString(identifiers[0], contextWindowSize);
+      result.push({
+        identifiers,
+        scopeKey,
+        surroundingCode
+      });
+    } else {
+      for (let i = 0; i < identifiers.length; i += maxBatchSize) {
+        const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
+        const surroundingCode = await scopeToString(batchIdentifiers[0], contextWindowSize);
+        result.push({
+          identifiers: batchIdentifiers,
+          scopeKey: `${scopeKey}_${i}`,
+          surroundingCode
+        });
+      }
+    }
+  }
+  
+  return result;
+}
+
+// 完整的分组函数：两步实现
 async function groupIdentifiersByScope(
   scopes: NodePath<Identifier>[],
   contextWindowSize: number,
-  maxBatchSize: number = 10, // 最大批次大小
-  overlapThreshold: number = 0.7 // 重叠阈值（70%）
-): Promise<Array<{ identifiers: NodePath<Identifier>[], surroundingCode: string }>> {
-  const groups: Array<{ identifiers: NodePath<Identifier>[], surroundingCode: string }> = [];
+  maxBatchSize: number = 10
+): Promise<Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }>> {
+  // 第一步：按作用域位置分组
+  const grouped = groupByScopePosition(scopes);
   
-  for (const scope of scopes) {
-    const surroundingCode = await scopeToString(scope, contextWindowSize);
-
-    // 寻找合适的现有组
-    let foundGroup = false;
-    for (const group of groups) {
-      // 检查是否达到批次大小限制
-      if (group.identifiers.length >= maxBatchSize) {
-        continue;
-      }
-      
-      // 检查是否在相同的作用域中
-      if (areInSameScope(scope, group.identifiers[0])) {
-        // 如果在相同作用域，则计算代码重叠度
-        const overlapRatio = calculateCodeOverlap(surroundingCode, group.surroundingCode);
-        
-        if (overlapRatio >= overlapThreshold) {
-          group.identifiers.push(scope);
-          foundGroup = true;
-          break;
-        }
-      }
-    }
-    
-    // 如果没有找到合适的组，创建新组
-    if (!foundGroup) {
-      groups.push({
-        identifiers: [scope],
-        surroundingCode: surroundingCode
-      });
-    }
-  }
-  
-  return groups;
+  // 第二步：切分过大的组
+  return await splitOversizedGroups(grouped, contextWindowSize, maxBatchSize);
 }
 
-// 检查两个标识符是否在相同的作用域中
-function areInSameScope(path1: NodePath<Identifier>, path2: NodePath<Identifier>): boolean {
-  // 获取两个标识符的最近的包含作用域
-  const scope1 = closestSurroundingContextPath(path1);
-  const scope2 = closestSurroundingContextPath(path2);
-  
-  // 如果是同一个节点，则在同一作用域
-  if (scope1.node === scope2.node) {
-    return true;
-  }
-  
-  // 检查是否在同一个函数内
-  const func1 = path1.getFunctionParent();
-  const func2 = path2.getFunctionParent();
-  
-  // 如果都没有函数父级，则都在全局作用域
-  if (!func1 && !func2) {
-    return true;
-  }
-  
-  // 如果都在同一个函数内
-  if (func1 && func2 && func1.node === func2.node) {
-    return true;
-  }
-  
-  return false;
-}
 
-// 计算两段代码的重叠度
-function calculateCodeOverlap(code1: string, code2: string): number {
-  // 将代码按行分割，去除空行和只包含空白字符的行
-  const lines1 = code1.split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0 && !line.match(/^[{}();\s]*$/));
-  const lines2 = code2.split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0 && !line.match(/^[{}();\s]*$/));
+// 获取作用域的位置key，避免存储完整代码
+function getScopePositionKey(scope: NodePath<Identifier>): string {
+  const contextPath = closestSurroundingContextPath(scope);
+  const node = contextPath.node;
   
-  if (lines1.length === 0 || lines2.length === 0) {
-    return 0;
+  if (node.loc) {
+    return `${node.type}_${node.loc.start.line}_${node.loc.start.column}`;
   }
   
-  // 检查是否包含不同的函数定义，如果是则重叠度为0
-  const functionRegex = /function\s+(\w+)|const\s+(\w+)\s*=.*function|(\w+)\s*\(/;
-  const functions1 = lines1.filter(line => functionRegex.test(line));
-  const functions2 = lines2.filter(line => functionRegex.test(line));
-  
-  if (functions1.length > 0 && functions2.length > 0) {
-    const func1Names = functions1.map(f => f.match(functionRegex)?.[1] || f.match(functionRegex)?.[2] || f.match(functionRegex)?.[3]).filter(Boolean);
-    const func2Names = functions2.map(f => f.match(functionRegex)?.[1] || f.match(functionRegex)?.[2] || f.match(functionRegex)?.[3]).filter(Boolean);
-    
-    // 如果函数名不同，则认为不重叠
-    const hasCommonFunction = func1Names.some(name => func2Names.includes(name));
-    if (!hasCommonFunction) {
-      return 0;
-    }
-  }
-  
-  // 计算重叠的行数
-  let overlapCount = 0;
-  const lines2Set = new Set(lines2);
-  
-  for (const line of lines1) {
-    if (lines2Set.has(line)) {
-      overlapCount++;
-    }
-  }
-  
-  // 返回重叠比例（相对于较短的代码段）
-  const minLength = Math.min(lines1.length, lines2.length);
-  return overlapCount / minLength;
+  // 如果没有位置信息，使用节点类型和哈希
+  return `${node.type}_${node.start || 0}`;
 }
 
 function closestSurroundingContextPath(
