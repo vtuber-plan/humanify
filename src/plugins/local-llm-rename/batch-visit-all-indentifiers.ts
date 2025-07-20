@@ -2,7 +2,6 @@ import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
-import { initializeTracker, getTracker, getTrackerState, restoreTrackerFromState } from "../../sourcemap/ast-position-tracker.js";
 import { verbose } from "../../verbose.js";
 
 const traverse: typeof babelTraverse.default.default = (
@@ -53,9 +52,7 @@ export async function batchVisitAllIdentifiers(
 
   const sessionId = resume;
   
-  // 获取已存在的tracker（如果有文件路径），不重新初始化
-  const existingTracker = filePath ? getTracker(filePath) : null;
-  
+
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
     const resumeState = await loadResumeState(sessionId);
@@ -68,16 +65,6 @@ export async function batchVisitAllIdentifiers(
       visited = new Set(resumeState.visited);
       scopes = await findScopes(ast);
       currentIndex = resumeState.currentIndex;
-      
-      // 恢复tracker状态
-      if (resumeState.trackerState) {
-        try {
-          restoreTrackerFromState(resumeState.trackerState);
-          console.log(`Restored tracker state with ${resumeState.trackerState.renameRecords.length} rename records`);
-        } catch (error) {
-          console.warn("Failed to restore tracker state:", error);
-        }
-      }
       
       console.log(`Resuming from index ${currentIndex}/${scopes.length}`);
     } else {
@@ -129,11 +116,6 @@ export async function batchVisitAllIdentifiers(
       }
       renames.add(safeRenamed);
 
-      // 记录重命名映射到位置跟踪器（使用已存在的tracker）
-      if (filePath && existingTracker) {
-        existingTracker.recordIdentifierRename(smallestScope, smallestScopeNode.name, safeRenamed);
-      }
-
       smallestScope.scope.rename(smallestScopeNode.name, safeRenamed);
     }
     markVisited(smallestScope, smallestScopeNode.name, visited);
@@ -145,17 +127,14 @@ export async function batchVisitAllIdentifiers(
         throw new Error("Failed to stringify code");
       }
       
-      // 获取tracker状态
-      const trackerState = filePath ? getTrackerState(filePath) : null;
-      
+
       const resumeState: ResumeState = {
         code: newCodeResult?.code,
         renames: Array.from(renames),
         visited: Array.from(visited),
         currentIndex: i + 1,
         totalScopes: scopes.length,
-        codePath: resume || "",
-        trackerState: trackerState || undefined
+        codePath: resume || ""
       };
       await saveResumeState(resumeState, sessionId);
     }
@@ -194,9 +173,6 @@ export async function batchVisitAllIdentifiersGrouped(
 
   const sessionId = resume;
   
-  // 获取已存在的tracker（如果有文件路径），不重新初始化
-  const existingTracker = filePath ? getTracker(filePath) : null;
-  
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
     const resumeState = await loadResumeState(sessionId);
@@ -209,16 +185,6 @@ export async function batchVisitAllIdentifiersGrouped(
       visited = new Set(resumeState.visited);
       scopes = await findScopes(ast);
       currentIndex = resumeState.currentIndex;
-      
-      // 恢复tracker状态
-      if (resumeState.trackerState) {
-        try {
-          restoreTrackerFromState(resumeState.trackerState);
-          console.log(`Restored tracker state with ${resumeState.trackerState.renameRecords.length} rename records`);
-        } catch (error) {
-          console.warn("Failed to restore tracker state:", error);
-        }
-      }
       
       console.log(`Resuming from index ${currentIndex}/${scopes.length}`);
     } else {
@@ -276,23 +242,6 @@ export async function batchVisitAllIdentifiersGrouped(
         }
         renames.add(safeRenamed);
 
-        // 记录重命名映射到位置跟踪器（使用已存在的tracker）
-        if (filePath && existingTracker) {
-          // 记录声明位置
-          existingTracker.recordIdentifierRename(identifier, originalName, safeRenamed);
-          
-          // 记录该作用域中所有同名标识符的位置
-          const binding = identifier.scope.getBinding(originalName);
-          if (binding) {
-            // 遍历所有引用
-            for (const referencePath of binding.referencePaths) {
-              if (referencePath.node !== identifier.node && referencePath.isIdentifier()) { // 避免重复记录声明
-                existingTracker.recordIdentifierRename(referencePath, originalName, safeRenamed);
-              }
-            }
-          }
-        }
-
         identifier.scope.rename(originalName, safeRenamed);
       }
       markVisited(identifier, originalName, visited);
@@ -305,17 +254,13 @@ export async function batchVisitAllIdentifiersGrouped(
         throw new Error("Failed to stringify code");
       }
       
-      // 获取tracker状态
-      const trackerState = filePath ? getTrackerState(filePath) : null;
-      
       const resumeState: ResumeState = {
         code: newCodeResult?.code,
         renames: Array.from(renames),
         visited: Array.from(visited),
         currentIndex: i + 1,
         totalScopes: groupedScopes.length,
-        codePath: resume || "",
-        trackerState: trackerState || undefined
+        codePath: resume || ""
       };
       await saveResumeState(resumeState, sessionId);
     }

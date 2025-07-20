@@ -1,5 +1,4 @@
 import { transform, PluginItem } from "@babel/core";
-import { getTracker } from "./sourcemap/ast-position-tracker.js";
 
 export interface TransformOptions {
   enableSourceMap?: boolean;
@@ -12,8 +11,7 @@ export const transformWithPlugins = async (
   plugins: PluginItem[],
   options: TransformOptions = {}
 ): Promise<string> => {
-  const tracker = options.filePath ? getTracker(options.filePath) : null;
-  
+
   return await new Promise((resolve, reject) =>
     transform(
       code,
