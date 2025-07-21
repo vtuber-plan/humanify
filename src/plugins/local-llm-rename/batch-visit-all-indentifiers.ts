@@ -3,6 +3,7 @@ import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
+import { analyzeScopeInformationAST } from "../../readability-utils.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -36,125 +37,6 @@ function renameConflictIndentier(name: string): string {
   return `_${name}`;
 }
 
-export async function batchVisitAllIdentifiers(
-  code: string,
-  visitor: Visitor,
-  contextWindowSize: number,
-  onProgress?: (percentageDone: number) => void,
-  resume?: string,
-  filePath?: string
-): Promise<string> {
-  let ast: Node | null;
-  let renames: Set<string>;
-  let visited: Set<string>;
-  let scopes: NodePath<Identifier>[];
-  let currentIndex = 0;
-
-  const sessionId = resume;
-  
-
-  // Handle resume functionality - if codePath is provided, it implies resume
-  if (sessionId) {
-    const resumeState = await loadResumeState(sessionId);
-    if (resumeState) {
-      ast = await parseAsync(resumeState.code, { sourceType: "unambiguous" });
-      if (!ast) {
-        throw new Error("Failed to parse code");
-      }
-      renames = new Set(resumeState.renames);
-      visited = new Set(resumeState.visited);
-      scopes = await findScopes(ast);
-      currentIndex = resumeState.currentIndex;
-      
-      console.log(`Resuming from index ${currentIndex}/${scopes.length}`);
-    } else {
-      // No resume state found, start fresh
-      ast = await parseAsync(code, { sourceType: "unambiguous" });
-      if (!ast) {
-        throw new Error("Failed to parse code");
-      }
-      renames = new Set<string>();
-      visited = new Set<string>();
-      scopes = await findScopes(ast);
-    }
-  } else {
-    // Fresh start
-    ast = await parseAsync(code, { sourceType: "unambiguous" });
-    if (!ast) {
-      throw new Error("Failed to parse code");
-    }
-    renames = new Set<string>();
-    visited = new Set<string>();
-    scopes = await findScopes(ast);
-  }
-
-  const numRenamesExpected = scopes.length;
-
-  // Process remaining scopes
-  for (let i = currentIndex; i < scopes.length; i++) {
-    const smallestScope = scopes[i];
-    
-    if (hasVisited(smallestScope, visited)) continue;
-
-    const smallestScopeNode = smallestScope.node;
-    if (smallestScopeNode.type !== "Identifier") {
-      throw new Error("No identifiers found");
-    }
-
-    const surroundingCode = await scopeToString(
-      smallestScope,
-      contextWindowSize
-    );
-    const renamed = await visitor(smallestScopeNode.name, surroundingCode);
-    if (renamed !== smallestScopeNode.name) {
-      let safeRenamed = toIdentifier(renamed);
-      while (
-        renames.has(safeRenamed) ||
-        smallestScope.scope.hasBinding(safeRenamed)
-      ) {
-        safeRenamed = renameConflictIndentier(safeRenamed);
-      }
-      renames.add(safeRenamed);
-
-      smallestScope.scope.rename(smallestScopeNode.name, safeRenamed);
-    }
-    markVisited(smallestScope, smallestScopeNode.name, visited);
-
-    // Save progress periodically
-    if (sessionId && (i % 10 === 0 || i === scopes.length - 1)) {
-      const newCodeResult = await transformFromAstAsync(ast);
-      if (!newCodeResult || !newCodeResult.code) {
-        throw new Error("Failed to stringify code");
-      }
-      
-
-      const resumeState: ResumeState = {
-        code: newCodeResult?.code,
-        renames: Array.from(renames),
-        visited: Array.from(visited),
-        currentIndex: i + 1,
-        totalScopes: scopes.length,
-        codePath: resume || ""
-      };
-      await saveResumeState(resumeState, sessionId);
-    }
-
-    onProgress?.(visited.size / numRenamesExpected);
-  }
-  onProgress?.(1);
-
-  // Clean up resume state when complete
-  if (sessionId) {
-    await deleteResumeState(sessionId);
-  }
-
-  const stringified = await transformFromAstAsync(ast);
-  if (stringified?.code == null) {
-    throw new Error("Failed to stringify code");
-  }
-  return stringified.code;
-}
-
 export async function batchVisitAllIdentifiersGrouped(
   code: string,
   visitor: BatchVisitor,
@@ -162,7 +44,6 @@ export async function batchVisitAllIdentifiersGrouped(
   onProgress?: (percentageDone: number) => void,
   resume?: string,
   maxBatchSize: number = 10,
-  overlapThreshold: number = 0.7,
   filePath?: string
 ): Promise<string> {
   let ast: Node | null;
@@ -231,24 +112,27 @@ export async function batchVisitAllIdentifiersGrouped(
       continue;
     }
     
-    // 检查是否已经处理过这个组中的所有identifier
-    const unvisitedIdentifiers = group.identifiers.filter(id => !hasVisited(id, visited));
+    // 检查
+    const unvisitedIdentifiers = group.identifiers;
     if (unvisitedIdentifiers.length === 0) {
       processedCount++;
       groupIndex++;
       continue;
     }
 
-    // 去重：确保每个变量名在批次中只出现一次
-    const uniqueIdentifierNames = [...new Set(unvisitedIdentifiers.map(id => id.node.name))];
+    const identifierNames = unvisitedIdentifiers.map(id => id.node.name);
     const surroundingCode = group.surroundingCode;
 
     // 批量重命名这个组中的所有identifier
-    const renameMap = await visitor(uniqueIdentifierNames, surroundingCode);
+    const renameMap = await visitor(identifierNames, surroundingCode);
     
     // 应用重命名
     for (const identifier of unvisitedIdentifiers) {
       const originalName = identifier.node.name;
+      // 不包含key originalName
+      if (!renameMap.hasOwnProperty(originalName)) {
+        continue;
+      }
       const newName = renameMap[originalName];
       
       if (newName && newName !== originalName) {
@@ -395,7 +279,10 @@ async function* splitOversizedGroupsGenerator(
     
     // 如果组大小未超过限制，直接生成
     if (identifiers.length <= maxBatchSize) {
-      const surroundingCode = await scopeToString(identifiers[0], contextWindowSize);
+      const firstScope = identifiers[0];
+      // 检查firstScope的信息量是否足够用于推断
+
+      const surroundingCode = await scopeToString(firstScope, contextWindowSize);
       yield {
         identifiers,
         scopeKey,
@@ -405,7 +292,8 @@ async function* splitOversizedGroupsGenerator(
       // 超过批次大小，按批次流式生成
       for (let i = 0; i < identifiers.length; i += maxBatchSize) {
         const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
-        const surroundingCode = await scopeToString(batchIdentifiers[0], contextWindowSize);
+        const firstScope = batchIdentifiers[0];
+        const surroundingCode = await scopeToString(firstScope, contextWindowSize);
         yield {
           identifiers: batchIdentifiers,
           scopeKey: `${scopeKey}_${i}`,
@@ -428,7 +316,8 @@ async function splitOversizedGroups(
     const { identifiers, scopeKey } = group;
     
     if (identifiers.length <= maxBatchSize) {
-      const surroundingCode = await scopeToString(identifiers[0], contextWindowSize);
+      const firstScope = identifiers[0];
+      const surroundingCode = await scopeToString(firstScope, contextWindowSize);
       result.push({
         identifiers,
         scopeKey,
@@ -437,7 +326,8 @@ async function splitOversizedGroups(
     } else {
       for (let i = 0; i < identifiers.length; i += maxBatchSize) {
         const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
-        const surroundingCode = await scopeToString(batchIdentifiers[0], contextWindowSize);
+        const firstScope = batchIdentifiers[0];
+        const surroundingCode = await scopeToString(firstScope, contextWindowSize);
         result.push({
           identifiers: batchIdentifiers,
           scopeKey: `${scopeKey}_${i}`,
@@ -470,7 +360,7 @@ function getScopePositionKey(scope: NodePath<Identifier>): string {
   const node = contextPath.node;
   
   if (node.loc) {
-    return `${node.type}_${node.loc.start.line}_${node.loc.start.column}`;
+    return `${node.type}_${node.loc.start.line}_${node.loc.start.column}_${node.loc.end.line}_${node.loc.end.column}`;
   }
   
   // 如果没有位置信息，使用节点类型和哈希

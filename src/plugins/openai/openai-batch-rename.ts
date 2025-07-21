@@ -5,163 +5,6 @@ import { verbose } from "../../verbose.js";
 
 import { createClientOptions } from "../../proxy-utils.js";
 
-export function openaiRename({
-  apiKey,
-  baseURL,
-  model,
-  contextWindowSize,
-  resume = undefined,
-}: {
-  apiKey: string;
-  baseURL: string;
-  model: string;
-  contextWindowSize: number;
-  resume?: string;
-}) {
-  const clientOptions = createClientOptions(baseURL, {
-    apiKey,
-    baseURL,
-  });
-  const client = new OpenAI(clientOptions);
-
-  return async (code: string): Promise<string> => {
-    const startTime = Date.now();
-    return await batchVisitAllIdentifiers(
-      code,
-      async (names, surroundingCode) => {
-        verbose.log(`Renaming ${names}`);
-        verbose.log("Context: ", surroundingCode);
-
-        // 封装一次LLM请求和解析的逻辑，便于重试
-        async function getRenamed(promptParams: { names: string; surroundingCode: string; model: string; extraPrompt?: string }, rawResult?: string): Promise<string> {
-          if (rawResult) {
-            return extractJsonResponse(rawResult);
-          }
-
-          const requestParams: any = {
-            ...toRenamePrompt([promptParams.names], promptParams.surroundingCode, promptParams.model, promptParams.extraPrompt),
-            stream: true,
-          };
-
-          const stream = await client.chat.completions.create(requestParams);
-
-          let fullContent = "";
-          const timeoutMs = 5 * 60 * 1000; // 5分钟超时
-          const startTime = Date.now();
-
-          try {
-            for await (const chunk of stream as any) {
-              if (Date.now() - startTime > timeoutMs) {
-                throw new Error("Stream timeout after 30 seconds");
-              }
-
-              const content = chunk.choices[0]?.delta?.content || "";
-              if (content) {
-                fullContent += content;
-              }
-            }
-
-            // 流结束后处理完整内容
-            verbose.log("Stream result:", fullContent);
-            return extractJsonResponse(fullContent);
-          } catch (error) {
-            verbose.log("Stream error:", error);
-            throw error;
-          }
-        }
-
-        function extractJsonResponse(result: string): string {
-          let jsonStr = result.trim();
-
-          if (jsonStr.includes('```')) {
-            // 提取```json ...```或``` ...```中的内容，只取代码块内的内容
-            const match = jsonStr.match(/```[a-z]*\s*([\s\S]*?)\s*```/i);
-            if (match && match[1]) {
-              jsonStr = match[1].trim();
-              verbose.log("Extracted JSON string:", jsonStr);
-            }
-          }
-
-          try {
-            return JSON.parse(jsonStr).newName;
-          } catch (error) {
-            verbose.log("Failed to parse response:", jsonStr);
-            throw error;
-          }
-        }
-
-        let renamed: string;
-        try {
-          renamed = await getRenamed({ names, surroundingCode, model });
-        } catch (error) {
-          // 如果第一次解析失败，重新发给LLM让其只返回JSON
-          verbose.log("Error parsing response:", error);
-          verbose.log("Retrying with format correction prompt...");
-          const formatPrompt = `请将下面的内容仅以JSON格式输出，且**不要包含任何多余的内容**，只返回JSON对象!!!`;
-          try {
-            renamed = await getRenamed({ names, surroundingCode, model, extraPrompt: formatPrompt });
-          } catch (error2) {
-            verbose.log("Failed again to parse response after retry.");
-            throw new Error("Failed to parse response after retry", { cause: error2 });
-          }
-        }
-
-        verbose.log(`Renamed to ${renamed}`);
-
-        // sleep(1000); // 等待1秒，避免过快请求导致API限制
-        // sleep(500);
-
-        return renamed;
-      },
-      contextWindowSize,
-      (percentage) => showPercentage(percentage, startTime),
-      resume,
-    );
-  };
-}
-
-function toRenamePrompt(
-  names: string[],
-  surroundingCode: string,
-  model: string,
-  extraPrompt?: string
-): OpenAI.Chat.Completions.ChatCompletionCreateParams {
-  let userContent = `Rename Javascript variables/function \`${names.join(", ")}\` to have descriptive name based on their usage in the code."
-        Here is the surrounding code:
-        \`\`\`javascript
-        ${surroundingCode}
-        \`\`\`
-
-        Please provide the new name in the response as a JSON object mapping original names to new names.
-        The response should be a valid JSON string.
-        For example:
-        \`\`\`json
-        {
-          "originalName1": "newName1",
-          "originalName2": "newName2",
-          ...
-        }
-        \`\`\`
-        `;
-  if (extraPrompt) {
-    userContent += `\n${extraPrompt}`;
-  }
-  return {
-    model,
-    messages: [
-      {
-        role: "system",
-        content: `You are a helpful assistant that renames Javascript variables and functions to have more descriptive names based on their usage in the code.
-        You will be given a variable or function name and the surrounding code context.`
-      },
-      {
-        role: "user",
-        content: userContent
-      }
-    ]
-  };
-}
-
 export function openaiBatchRename({
   apiKey,
   baseURL,
@@ -194,52 +37,44 @@ export function openaiBatchRename({
         verbose.log("Context: ", surroundingCode);
         
         // if xxx = "", use regex
-        if (surroundingCode.trim().match(/^[a-zA-Z0-9_]+ = ".*"/)) {
-          return names.reduce((acc, name) => {
-            acc[name] = name;
-            return acc;
-          }, {} as Record<string, string>);
+        if (surroundingCode.trim().match(/^[a-zA-Z0-9_]+ = "\s*"/)) {
+          return {};
+        }
+
+        // if xxx = {}, use regex
+        if (surroundingCode.trim().match(/^[a-zA-Z0-9_]+ = \{\s*\}$/)) {
+          return {};
         }
 
         // if [xxx], use regex
         if (surroundingCode.trim().match(/^\[[a-zA-Z0-9_]+\]$/)) {
-          return names.reduce((acc, name) => {
-            acc[name] = name;
-            return acc;
-          }, {} as Record<string, string>);
+          return {};
         }
 
         // if function U() {}, use regex
-        if (surroundingCode.trim().match(/^function [a-zA-Z0-9_]+\(\) \{.*\}$/)) {
-          return names.reduce((acc, name) => {
-            acc[name] = name;
-            return acc;
-          }, {} as Record<string, string>);
+        if (surroundingCode.trim().match(/^function [a-zA-Z0-9_]+\(\) \{\s*\}$/)) {
+          return {};
         }
 
         // if function U(xxx) {}, use regex
-        if (surroundingCode.trim().match(/^function [a-zA-Z0-9_]+\([a-zA-Z0-9_]+\) \{.*\}$/)) {
-          return names.reduce((acc, name) => {
-            acc[name] = name;
-            return acc;
-          }, {} as Record<string, string>);
+        if (surroundingCode.trim().match(/^function [a-zA-Z0-9_]+\([a-zA-Z0-9_]+\) \{\s*\}$/)) {
+          return {};
+        }
+
+        // if class Ou {}, use regex
+        if (surroundingCode.trim().match(/^class [a-zA-Z0-9_]+\s*\{\s*\}$/)) {
+          return {};
         }
 
         // if catch (xxx) {}
-        if (surroundingCode.trim().match(/^catch \([a-zA-Z0-9_]+\) \{.*\}$/)) {
-          return names.reduce((acc, name) => {
-            acc[name] = name;
-            return acc;
-          }, {} as Record<string, string>);
+        if (surroundingCode.trim().match(/^catch \([a-zA-Z0-9_]+\) \{\s*\}$/)) {
+          return {};
         }
 
 
         // context too small if , 例如E = {}，[A]，D=[]
         if (surroundingCode.replace(/\s/g, '').length < 10) {
-          return names.reduce((acc, name) => {
-            acc[name] = name;
-            return acc;
-          }, {} as Record<string, string>);
+          return {};
         }
 
         async function getBatchRenamed(promptParams: { names: string[]; surroundingCode: string; model: string; extraPrompt?: string; systemPrompt?: string }, rawResult?: string): Promise<Record<string, string>> {
@@ -328,7 +163,6 @@ export function openaiBatchRename({
       (percentage) => showPercentage(percentage, startTime),
       resume,
       batchSize,
-      0.7,
       filePath
     );
   };
