@@ -144,14 +144,14 @@ export function calculateReadabilityScore(name: string): number {
  * @param ast 代码的AST节点
  * @returns 信息量分数 (0-100)
  */
-export function calculateScopeInformationScoreAST(ast: Node): number {
+export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
   if (!ast) return 0;
 
   let unObfuscatedIdentifiers = new Set<string>();
   let unObfuscatedCalls = new Set<string>();
   let strings = new Set<string>();
 
-  traverse(ast, {
+  ast.traverse({
     // 1. 收集标识符
     Identifier(path) {
       const name = path.node.name;
@@ -272,7 +272,7 @@ export function calculateScopeInformationScoreAST(ast: Node): number {
 /**
  * 使用AST进行详细分析
  */
-export function analyzeScopeInformationAST(ast: Node): {
+export function analyzeScopeInformationAST(ast: NodePath<Node>): {
   score: number;
   unObfuscatedIdentifiers: string[];
   unObfuscatedCalls: string[];
@@ -297,7 +297,7 @@ export function analyzeScopeInformationAST(ast: Node): {
   const unObfuscatedCalls = new Set<string>();
   const strings = new Set<string>();
 
-  traverse(ast, {
+  ast.traverse({
     Identifier(path) {
       const name = path.node.name;
       if (name && name.length > 2 &&

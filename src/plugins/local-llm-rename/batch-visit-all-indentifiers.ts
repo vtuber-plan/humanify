@@ -1,9 +1,9 @@
 import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
-import { Identifier, toIdentifier, Node } from "@babel/types";
+import { Identifier, toIdentifier, Node, identifier, cloneNode } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
-import { analyzeScopeInformationAST } from "../../readability-utils.js";
+import { analyzeScopeInformationAST, calculateScopeInformationScoreAST } from "../../readability-utils.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -44,7 +44,8 @@ export async function batchVisitAllIdentifiersGrouped(
   onProgress?: (percentageDone: number) => void,
   resume?: string,
   maxBatchSize: number = 10,
-  filePath?: string
+  filePath?: string,
+  minInformationScore: number = 30
 ): Promise<string> {
   let ast: Node | null;
   let renames: Set<string>;
@@ -53,7 +54,7 @@ export async function batchVisitAllIdentifiersGrouped(
   let currentIndex = 0;
 
   const sessionId = resume;
-  
+
   // Handle resume functionality - if codePath is provided, it implies resume
   if (sessionId) {
     const resumeState = await loadResumeState(sessionId);
@@ -66,7 +67,7 @@ export async function batchVisitAllIdentifiersGrouped(
       visited = new Set(resumeState.visited);
       scopes = await findScopes(ast);
       currentIndex = resumeState.currentIndex;
-      
+
       console.log(`Resuming from index ${currentIndex}/${scopes.length}`);
     } else {
       // No resume state found, start fresh
@@ -90,20 +91,25 @@ export async function batchVisitAllIdentifiersGrouped(
   }
 
   // 按位置先后找到scopes，然后按作用域分组，最后按作用域范围从小到大排序组
+  verbose.log(`Finding scopes...`);
   const groupedScopes = groupByScopePosition(scopes);
+  verbose.log(`Grouping scopes...`);
   const sortedGroups = sortGroupsByScopeSize(groupedScopes);
-  
+  verbose.log(`Sorting groups...`);
+
   // 预计算总组数用于进度跟踪
   let totalGroups = 0;
   for (const group of sortedGroups) {
     const batchCount = Math.ceil(group.identifiers.length / maxBatchSize);
     totalGroups += batchCount;
   }
-  
+  verbose.log("Counting total groups...");
+
   let processedCount = 0;
   let groupIndex = 0;
-  const groupGenerator = splitOversizedGroupsGenerator(sortedGroups, contextWindowSize, maxBatchSize);
-  
+  const groupGenerator = splitOversizedGroupsGenerator(sortedGroups, contextWindowSize, maxBatchSize, minInformationScore);
+  verbose.log(`Processing groups...`);
+
   // Process groups in scope size order (smallest to largest)
   for await (const group of groupGenerator) {
     if (processedCount < currentIndex) {
@@ -111,7 +117,7 @@ export async function batchVisitAllIdentifiersGrouped(
       groupIndex++;
       continue;
     }
-    
+
     // 检查
     const unvisitedIdentifiers = group.identifiers;
     if (unvisitedIdentifiers.length === 0) {
@@ -125,7 +131,7 @@ export async function batchVisitAllIdentifiersGrouped(
 
     // 批量重命名这个组中的所有identifier
     const renameMap = await visitor(identifierNames, surroundingCode);
-    
+
     // 应用重命名
     for (const identifier of unvisitedIdentifiers) {
       const originalName = identifier.node.name;
@@ -134,7 +140,7 @@ export async function batchVisitAllIdentifiersGrouped(
         continue;
       }
       const newName = renameMap[originalName];
-      
+
       if (newName && newName !== originalName) {
         let safeRenamed = toIdentifier(newName);
         while (
@@ -159,7 +165,7 @@ export async function batchVisitAllIdentifiersGrouped(
       if (!newCodeResult || !newCodeResult.code) {
         throw new Error("Failed to stringify code");
       }
-      
+
       const resumeState: ResumeState = {
         code: newCodeResult?.code,
         renames: Array.from(renames),
@@ -212,6 +218,106 @@ function getScopeSize(scope: NodePath<Identifier>): number {
   return bindingBlock.end! - bindingBlock.start!;
 }
 
+/**
+ * 使用AST检查作用域信息是否足够，如果不足则向上扩展作用域
+ * 并在特定变量后面添加注释提示模型
+ * @param path 当前作用域的标识符路径
+ * @param contextWindowSize 上下文窗口大小限制
+ * @param minInformationScore 最小信息量阈值
+ * @param identifiers 需要重命名的标识符列表，用于添加注释
+ * @returns 扩展后的作用域代码，包含注释提示
+ */
+async function expandScopeIfInsufficientAST(
+  path: NodePath<Identifier>,
+  minInformationScore: number = 30,
+  identifiers: NodePath<Identifier>[] = []
+): Promise<string> {
+  let currentPath = closestSurroundingContextPath(path);
+
+  // Add comment
+  for (const identifier of identifiers) {
+    identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
+  }
+
+  let currentCode = `${currentPath}`;
+  const identifierNames = identifiers.map(id => id.node.name);
+
+  // 尝试当前作用域
+  const currentAst = currentPath;
+  if (currentAst) {
+    const analysisScore = calculateScopeInformationScoreAST(currentAst);
+    if (analysisScore >= minInformationScore) {
+      // 添加注释到指定变量
+      // restore identifiers
+      for (const identifier of identifiers) {
+        identifier.node.trailingComments = [];
+      }
+      return currentCode;
+    }
+  }
+
+  // 信息不足，向上扩展作用域
+  let parentPath = currentPath.parentPath;
+
+  while (parentPath && !parentPath.isProgram()) {
+    const parentCode = `${parentPath}`;
+    const parentAst = parentPath;
+
+    if (parentAst) {
+      const analysisScore = calculateScopeInformationScoreAST(parentPath);
+      if (analysisScore >= minInformationScore) {
+        // 添加注释到指定变量
+        // restore identifiers
+        for (const identifier of identifiers) {
+          identifier.node.trailingComments = [];
+        }
+        return parentCode;
+      }
+    }
+
+    parentPath = parentPath.parentPath;
+  }
+
+  // 如果到达全局作用域或信息仍然不足，返回原始作用域并添加注释
+  // restore identifiers
+  for (const identifier of identifiers) {
+    identifier.node.trailingComments = [];
+  }
+  return currentCode;
+}
+
+function expandScope(surroundingScope: NodePath<Node>, minInformationScore: number = 30): NodePath<Node> {
+    const currentAst = surroundingScope;
+    if (currentAst) {
+      const analysisScore = calculateScopeInformationScoreAST(currentAst);
+      if (analysisScore >= minInformationScore) {
+        return currentAst;
+      }
+    }
+
+    if (!currentAst.parentPath) {
+      return currentAst;
+    }
+
+    // 信息不足，向上扩展作用域
+    let parentPath = currentAst.parentPath;
+
+    while (parentPath && !parentPath.isProgram()) {
+      if (parentPath) {
+        const analysisScore = calculateScopeInformationScoreAST(parentPath);
+        if (analysisScore >= minInformationScore) {
+          return parentPath;
+        }
+      }
+
+      if (!parentPath.parentPath) {
+        break;
+      }
+      parentPath = parentPath.parentPath;
+    }
+    return parentPath;
+}
+
 // 按作用域范围从小到大排序组
 function sortGroupsByScopeSize(groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>): Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }> {
   return groups.sort((a, b) => {
@@ -235,16 +341,44 @@ function markVisited(
 
 async function scopeToString(
   path: NodePath<Identifier>,
-  contextWindowSize: number
+  contextWindowSize: number,
+  identifiers: NodePath<Identifier>[],
+  minInformationScore: number = 30
 ): Promise<string> {
-  const surroundingPath = closestSurroundingContextPath(path);
-  
-  // 获取代码字符串，但限制大小
-  const codeStr = `${surroundingPath}`;
-  const maxLen = Math.min(codeStr.length, contextWindowSize);
-  
-  // 直接返回切片后的字符串，避免中间大字符串
-  return codeStr.slice(0, maxLen);
+  // 使用AST检查信息量并扩展作用域，添加注释到指定变量
+  const code = await expandScopeIfInsufficientAST(path, minInformationScore, identifiers);
+  if (code.length > contextWindowSize) {
+    var finalCode = "";
+    for (const identifier of identifiers) {
+      finalCode += `${closestSurroundingContextPath(identifier).toString()}`;
+      finalCode += `\n...\n`;
+    }
+
+    if (finalCode.length > contextWindowSize) {
+      finalCode = finalCode.slice(0, contextWindowSize);
+    } else {
+      finalCode = code.slice(0, contextWindowSize - finalCode.length) + finalCode;
+    }
+
+    return finalCode;
+  } else {
+    var finalCode = "";
+    for (const identifier of identifiers) {
+      if (code.includes(identifier.node.name)) {
+        continue;
+      }
+      finalCode += `${closestSurroundingContextPath(identifier).toString()}`;
+      finalCode += `\n...\n`;
+    }
+
+    if (finalCode.length > contextWindowSize) {
+      finalCode = finalCode.slice(0, contextWindowSize);
+    } else {
+      finalCode = code.slice(0, contextWindowSize - finalCode.length) + finalCode;
+    }
+
+    return finalCode;
+  }
 }
 
 // 第一步：按作用域位置分组identifier
@@ -252,16 +386,17 @@ function groupByScopePosition(
   scopes: NodePath<Identifier>[]
 ): Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }> {
   const scopeGroups = new Map<string, NodePath<Identifier>[]>();
-  
+
   for (const scope of scopes) {
-    const scopeKey = getScopePositionKey(scope);
-    
+    var surroundingScope = expandScope(scope, 30);
+    const scopeKey = getScopePositionKey(surroundingScope as NodePath<Identifier>);
+
     if (!scopeGroups.has(scopeKey)) {
       scopeGroups.set(scopeKey, []);
     }
     scopeGroups.get(scopeKey)!.push(scope);
   }
-  
+
   return Array.from(scopeGroups.entries()).map(([scopeKey, identifiers]) => ({
     identifiers,
     scopeKey
@@ -272,17 +407,17 @@ function groupByScopePosition(
 async function* splitOversizedGroupsGenerator(
   groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
   contextWindowSize: number,
-  maxBatchSize: number = 10
+  maxBatchSize: number = 10,
+  minInformationScore: number = 30
 ): AsyncIterableIterator<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }> {
   for (const group of groups) {
     const { identifiers, scopeKey } = group;
-    
+
     // 如果组大小未超过限制，直接生成
     if (identifiers.length <= maxBatchSize) {
       const firstScope = identifiers[0];
-      // 检查firstScope的信息量是否足够用于推断
-
-      const surroundingCode = await scopeToString(firstScope, contextWindowSize);
+      // 使用AST检查并扩展作用域
+      const surroundingCode = await scopeToString(firstScope, contextWindowSize, identifiers, minInformationScore);
       yield {
         identifiers,
         scopeKey,
@@ -293,7 +428,7 @@ async function* splitOversizedGroupsGenerator(
       for (let i = 0; i < identifiers.length; i += maxBatchSize) {
         const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
         const firstScope = batchIdentifiers[0];
-        const surroundingCode = await scopeToString(firstScope, contextWindowSize);
+        const surroundingCode = await scopeToString(firstScope, contextWindowSize, batchIdentifiers, minInformationScore);
         yield {
           identifiers: batchIdentifiers,
           scopeKey: `${scopeKey}_${i}`,
@@ -308,16 +443,17 @@ async function* splitOversizedGroupsGenerator(
 async function splitOversizedGroups(
   groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
   contextWindowSize: number,
-  maxBatchSize: number = 10
+  maxBatchSize: number = 10,
+  minInformationScore: number = 30
 ): Promise<Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }>> {
   const result: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }> = [];
-  
+
   for (const group of groups) {
     const { identifiers, scopeKey } = group;
-    
+
     if (identifiers.length <= maxBatchSize) {
       const firstScope = identifiers[0];
-      const surroundingCode = await scopeToString(firstScope, contextWindowSize);
+      const surroundingCode = await scopeToString(firstScope, contextWindowSize, identifiers, minInformationScore);
       result.push({
         identifiers,
         scopeKey,
@@ -327,7 +463,7 @@ async function splitOversizedGroups(
       for (let i = 0; i < identifiers.length; i += maxBatchSize) {
         const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
         const firstScope = batchIdentifiers[0];
-        const surroundingCode = await scopeToString(firstScope, contextWindowSize);
+        const surroundingCode = await scopeToString(firstScope, contextWindowSize, batchIdentifiers, minInformationScore);
         result.push({
           identifiers: batchIdentifiers,
           scopeKey: `${scopeKey}_${i}`,
@@ -336,7 +472,7 @@ async function splitOversizedGroups(
       }
     }
   }
-  
+
   return result;
 }
 
@@ -344,13 +480,14 @@ async function splitOversizedGroups(
 async function groupIdentifiersByScope(
   scopes: NodePath<Identifier>[],
   contextWindowSize: number,
-  maxBatchSize: number = 10
+  maxBatchSize: number = 10,
+  minInformationScore: number = 30
 ): Promise<Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }>> {
   // 第一步：按作用域位置分组
   const grouped = groupByScopePosition(scopes);
-  
+
   // 第二步：切分过大的组
-  return await splitOversizedGroups(grouped, contextWindowSize, maxBatchSize);
+  return await splitOversizedGroups(grouped, contextWindowSize, maxBatchSize, minInformationScore);
 }
 
 
@@ -358,11 +495,11 @@ async function groupIdentifiersByScope(
 function getScopePositionKey(scope: NodePath<Identifier>): string {
   const contextPath = closestSurroundingContextPath(scope);
   const node = contextPath.node;
-  
+
   if (node.loc) {
     return `${node.type}_${node.loc.start.line}_${node.loc.start.column}_${node.loc.end.line}_${node.loc.end.column}`;
   }
-  
+
   // 如果没有位置信息，使用节点类型和哈希
   return `${node.type}_${node.start || 0}`;
 }
