@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { batchVisitAllIdentifiers, batchVisitAllIdentifiersGrouped } from "../local-llm-rename/batch-visit-all-indentifiers.js";
+import { batchVisitAllIdentifiersGrouped } from "../local-llm-rename/batch-visit-all-indentifiers.js";
 import { showPercentage } from "../../progress.js";
 import { verbose } from "../../verbose.js";
 

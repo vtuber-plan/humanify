@@ -155,9 +155,7 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
     // 1. 收集标识符
     Identifier(path) {
       const name = path.node.name;
-      if (name && name.length > 2 &&
-        !isIdentifierObfuscated(name) &&
-        !['undefined', 'null', 'this', 'arguments', 'window', 'document', 'console'].includes(name)) {
+      if (name && name.length > 2) {
         unObfuscatedIdentifiers.add(name);
       }
     },
@@ -174,7 +172,7 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
         }
       }
 
-      if (calleeName && calleeName.length > 2 && !isIdentifierObfuscated(calleeName)) {
+      if (calleeName && calleeName.length > 2) {
         unObfuscatedCalls.add(calleeName);
       }
     },
@@ -184,7 +182,7 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
       if (path.node.callee.type === 'Identifier') {
         calleeName = path.node.callee.name;
       }
-      if (calleeName && calleeName.length > 2 && !isIdentifierObfuscated(calleeName)) {
+      if (calleeName && calleeName.length > 2) {
         unObfuscatedCalls.add(calleeName);
       }
     },
@@ -210,7 +208,7 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
     ObjectProperty(path) {
       if (path.node.key.type === 'Identifier') {
         const name = path.node.key.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
+        if (name && name.length > 2) {
           unObfuscatedIdentifiers.add(name);
         }
       }
@@ -219,7 +217,7 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
     ClassDeclaration(path) {
       if (path.node.id && path.node.id.name) {
         const name = path.node.id.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
+        if (name && name.length > 2) {
           unObfuscatedIdentifiers.add(name);
         }
       }
@@ -228,7 +226,7 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
     FunctionDeclaration(path) {
       if (path.node.id && path.node.id.name) {
         const name = path.node.id.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
+        if (name && name.length > 2) {
           unObfuscatedIdentifiers.add(name);
         }
       }
@@ -237,7 +235,7 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
     VariableDeclarator(path) {
       if (path.node.id.type === 'Identifier') {
         const name = path.node.id.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
+        if (name && name.length > 2) {
           unObfuscatedIdentifiers.add(name);
         }
       }
@@ -267,133 +265,4 @@ export function calculateScopeInformationScoreAST(ast: NodePath<Node>): number {
 
   // 确保分数在0-100范围内
   return Math.round(Math.max(0, Math.min(100, score)));
-}
-
-/**
- * 使用AST进行详细分析
- */
-export function analyzeScopeInformationAST(ast: NodePath<Node>): {
-  score: number;
-  unObfuscatedIdentifiers: string[];
-  unObfuscatedCalls: string[];
-  strings: string[];
-  details: {
-    identifierCount: number;
-    callCount: number;
-    stringCount: number;
-  };
-} {
-  if (!ast) {
-    return {
-      score: 0,
-      unObfuscatedIdentifiers: [],
-      unObfuscatedCalls: [],
-      strings: [],
-      details: { identifierCount: 0, callCount: 0, stringCount: 0 }
-    };
-  }
-
-  const unObfuscatedIdentifiers = new Set<string>();
-  const unObfuscatedCalls = new Set<string>();
-  const strings = new Set<string>();
-
-  ast.traverse({
-    Identifier(path) {
-      const name = path.node.name;
-      if (name && name.length > 2 &&
-        !isIdentifierObfuscated(name) &&
-        !['undefined', 'null', 'this', 'arguments', 'window', 'document', 'console'].includes(name)) {
-        unObfuscatedIdentifiers.add(name);
-      }
-    },
-
-    CallExpression(path) {
-      let calleeName = '';
-
-      if (path.node.callee.type === 'Identifier') {
-        calleeName = path.node.callee.name;
-      } else if (path.node.callee.type === 'MemberExpression') {
-        if (path.node.callee.property.type === 'Identifier') {
-          calleeName = path.node.callee.property.name;
-        }
-      }
-
-      if (calleeName && calleeName.length > 2 && !isIdentifierObfuscated(calleeName)) {
-        unObfuscatedCalls.add(calleeName);
-      }
-    },
-
-    NewExpression(path) {
-      let calleeName = '';
-      if (path.node.callee.type === 'Identifier') {
-        calleeName = path.node.callee.name;
-      }
-      if (calleeName && calleeName.length > 2 && !isIdentifierObfuscated(calleeName)) {
-        unObfuscatedCalls.add(calleeName);
-      }
-    },
-
-    StringLiteral(path) {
-      const value = path.node.value;
-      if (value && value.trim().length > 0) {
-        strings.add(value);
-      }
-    },
-
-    TemplateLiteral(path) {
-      path.node.quasis.forEach(quasi => {
-        if (quasi.value.raw && quasi.value.raw.trim().length > 0) {
-          strings.add(quasi.value.raw);
-        }
-      });
-    },
-
-    ObjectProperty(path) {
-      if (path.node.key.type === 'Identifier') {
-        const name = path.node.key.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
-          unObfuscatedIdentifiers.add(name);
-        }
-      }
-    },
-
-    ClassDeclaration(path) {
-      if (path.node.id && path.node.id.name) {
-        const name = path.node.id.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
-          unObfuscatedIdentifiers.add(name);
-        }
-      }
-    },
-
-    FunctionDeclaration(path) {
-      if (path.node.id && path.node.id.name) {
-        const name = path.node.id.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
-          unObfuscatedIdentifiers.add(name);
-        }
-      }
-    },
-
-    VariableDeclarator(path) {
-      if (path.node.id.type === 'Identifier') {
-        const name = path.node.id.name;
-        if (name && name.length > 2 && !isIdentifierObfuscated(name)) {
-          unObfuscatedIdentifiers.add(name);
-        }
-      }
-    }
-  });
-
-  return {
-    score: calculateScopeInformationScoreAST(ast),
-    unObfuscatedIdentifiers: Array.from(unObfuscatedIdentifiers),
-    unObfuscatedCalls: Array.from(unObfuscatedCalls),
-    strings: Array.from(strings),
-    details: {
-      identifierCount: unObfuscatedIdentifiers.size,
-      callCount: unObfuscatedCalls.size,
-      stringCount: strings.size,
-    },
-  };
 }

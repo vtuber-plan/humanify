@@ -3,7 +3,7 @@ import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node, identifier, cloneNode } from "@babel/types";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
-import { analyzeScopeInformationAST, calculateScopeInformationScoreAST } from "../../readability-utils.js";
+import { calculateScopeInformationScoreAST } from "../../readability-utils.js";
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -45,7 +45,7 @@ export async function batchVisitAllIdentifiersGrouped(
   resume?: string,
   maxBatchSize: number = 10,
   filePath?: string,
-  minInformationScore: number = 30
+  minInformationScore: number = 16
 ): Promise<string> {
   let ast: Node | null;
   let renames: Set<string>;
@@ -229,7 +229,7 @@ function getScopeSize(scope: NodePath<Identifier>): number {
  */
 async function expandScopeIfInsufficientAST(
   path: NodePath<Identifier>,
-  minInformationScore: number = 30,
+  minInformationScore: number = 16,
   identifiers: NodePath<Identifier>[] = []
 ): Promise<string> {
   let currentPath = closestSurroundingContextPath(path);
@@ -245,7 +245,8 @@ async function expandScopeIfInsufficientAST(
   // 尝试当前作用域
   const currentAst = currentPath;
   if (currentAst) {
-    const analysisScore = calculateScopeInformationScoreAST(currentAst);
+    // const analysisScore = calculateScopeInformationScoreAST(currentAst);
+    const analysisScore = currentCode.split("\n").length;
     if (analysisScore >= minInformationScore) {
       // 添加注释到指定变量
       // restore identifiers
@@ -264,7 +265,8 @@ async function expandScopeIfInsufficientAST(
     const parentAst = parentPath;
 
     if (parentAst) {
-      const analysisScore = calculateScopeInformationScoreAST(parentPath);
+      // const analysisScore = calculateScopeInformationScoreAST(parentPath);
+      const analysisScore = currentCode.split("\n").length;
       if (analysisScore >= minInformationScore) {
         // 添加注释到指定变量
         // restore identifiers
@@ -286,10 +288,11 @@ async function expandScopeIfInsufficientAST(
   return currentCode;
 }
 
-function expandScope(surroundingScope: NodePath<Node>, minInformationScore: number = 30): NodePath<Node> {
+function expandScope(surroundingScope: NodePath<Node>, minInformationScore: number = 16): NodePath<Node> {
     const currentAst = surroundingScope;
     if (currentAst) {
-      const analysisScore = calculateScopeInformationScoreAST(currentAst);
+      // const analysisScore = calculateScopeInformationScoreAST(currentAst);
+      const analysisScore = `${currentAst}`.split("\n").length;
       if (analysisScore >= minInformationScore) {
         return currentAst;
       }
@@ -304,7 +307,8 @@ function expandScope(surroundingScope: NodePath<Node>, minInformationScore: numb
 
     while (parentPath && !parentPath.isProgram()) {
       if (parentPath) {
-        const analysisScore = calculateScopeInformationScoreAST(parentPath);
+        // const analysisScore = calculateScopeInformationScoreAST(parentPath);
+        const analysisScore = `${parentPath}`.split("\n").length;
         if (analysisScore >= minInformationScore) {
           return parentPath;
         }
@@ -341,17 +345,61 @@ function markVisited(
 
 async function scopeToString(
   path: NodePath<Identifier>,
+  contextWindowSize: number
+) {
+  let surroundingPath = closestSurroundingContextPath(path);
+
+  // 如果 surroundingPath 是匿名函数，再往上一层
+  while (
+    (surroundingPath.isFunctionExpression?.() || surroundingPath.isArrowFunctionExpression?.()) &&
+    // @ts-ignore
+    !surroundingPath.node.id // 没有 id 即为匿名函数
+  ) {
+    if (!surroundingPath.parentPath) break;
+    surroundingPath = surroundingPath.parentPath;
+  }
+
+  const code = `${surroundingPath}`; // Implements a hidden `.toString()`
+  if (code.length < contextWindowSize) {
+    return code;
+  }
+  if (surroundingPath.isProgram()) {
+    const start = path.node.start ?? 0;
+    const end = path.node.end ?? code.length;
+    if (end < contextWindowSize / 2) {
+      return code.slice(0, contextWindowSize);
+    }
+    if (start > code.length - contextWindowSize / 2) {
+      return code.slice(-contextWindowSize);
+    }
+
+    return code.slice(
+      start - contextWindowSize / 2,
+      end + contextWindowSize / 2
+    );
+  } else {
+    return code.slice(0, contextWindowSize);
+  }
+}
+
+async function scopesToString(
+  path: NodePath<Identifier>,
   contextWindowSize: number,
   identifiers: NodePath<Identifier>[],
-  minInformationScore: number = 30
+  minlines: number = 16
 ): Promise<string> {
   // 使用AST检查信息量并扩展作用域，添加注释到指定变量
-  const code = await expandScopeIfInsufficientAST(path, minInformationScore, identifiers);
+  const code = await expandScopeIfInsufficientAST(path, minlines, identifiers);
   if (code.length > contextWindowSize) {
     var finalCode = "";
     for (const identifier of identifiers) {
-      finalCode += `${closestSurroundingContextPath(identifier).toString()}`;
+      if (code.includes(identifier.node.name)) {
+        continue;
+      }
+      identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
+      finalCode += await scopeToString(identifier, Math.floor(contextWindowSize / identifiers.length));
       finalCode += `\n...\n`;
+      identifier.node.trailingComments = [];
     }
 
     if (finalCode.length > contextWindowSize) {
@@ -367,14 +415,16 @@ async function scopeToString(
       if (code.includes(identifier.node.name)) {
         continue;
       }
-      finalCode += `${closestSurroundingContextPath(identifier).toString()}`;
+      identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
+      finalCode += await scopeToString(identifier, Math.floor(contextWindowSize / identifiers.length));
       finalCode += `\n...\n`;
+      identifier.node.trailingComments = [];
     }
 
     if (finalCode.length > contextWindowSize) {
       finalCode = finalCode.slice(0, contextWindowSize);
     } else {
-      finalCode = code.slice(0, contextWindowSize - finalCode.length) + finalCode;
+      finalCode = code.slice(0, contextWindowSize - finalCode.length) + `\n...\n` + finalCode;
     }
 
     return finalCode;
@@ -408,7 +458,7 @@ async function* splitOversizedGroupsGenerator(
   groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
   contextWindowSize: number,
   maxBatchSize: number = 10,
-  minInformationScore: number = 30
+  minInformationScore: number = 16
 ): AsyncIterableIterator<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }> {
   for (const group of groups) {
     const { identifiers, scopeKey } = group;
@@ -417,7 +467,7 @@ async function* splitOversizedGroupsGenerator(
     if (identifiers.length <= maxBatchSize) {
       const firstScope = identifiers[0];
       // 使用AST检查并扩展作用域
-      const surroundingCode = await scopeToString(firstScope, contextWindowSize, identifiers, minInformationScore);
+      const surroundingCode = await scopesToString(firstScope, contextWindowSize, identifiers, minInformationScore);
       yield {
         identifiers,
         scopeKey,
@@ -428,7 +478,7 @@ async function* splitOversizedGroupsGenerator(
       for (let i = 0; i < identifiers.length; i += maxBatchSize) {
         const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
         const firstScope = batchIdentifiers[0];
-        const surroundingCode = await scopeToString(firstScope, contextWindowSize, batchIdentifiers, minInformationScore);
+        const surroundingCode = await scopesToString(firstScope, contextWindowSize, batchIdentifiers, minInformationScore);
         yield {
           identifiers: batchIdentifiers,
           scopeKey: `${scopeKey}_${i}`,
@@ -444,7 +494,7 @@ async function splitOversizedGroups(
   groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
   contextWindowSize: number,
   maxBatchSize: number = 10,
-  minInformationScore: number = 30
+  minlines: number = 16
 ): Promise<Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }>> {
   const result: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }> = [];
 
@@ -453,7 +503,7 @@ async function splitOversizedGroups(
 
     if (identifiers.length <= maxBatchSize) {
       const firstScope = identifiers[0];
-      const surroundingCode = await scopeToString(firstScope, contextWindowSize, identifiers, minInformationScore);
+      const surroundingCode = await scopesToString(firstScope, contextWindowSize, identifiers, minlines);
       result.push({
         identifiers,
         scopeKey,
@@ -463,7 +513,7 @@ async function splitOversizedGroups(
       for (let i = 0; i < identifiers.length; i += maxBatchSize) {
         const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
         const firstScope = batchIdentifiers[0];
-        const surroundingCode = await scopeToString(firstScope, contextWindowSize, batchIdentifiers, minInformationScore);
+        const surroundingCode = await scopesToString(firstScope, contextWindowSize, batchIdentifiers, minlines);
         result.push({
           identifiers: batchIdentifiers,
           scopeKey: `${scopeKey}_${i}`,
@@ -481,7 +531,7 @@ async function groupIdentifiersByScope(
   scopes: NodePath<Identifier>[],
   contextWindowSize: number,
   maxBatchSize: number = 10,
-  minInformationScore: number = 30
+  minInformationScore: number = 16
 ): Promise<Array<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }>> {
   // 第一步：按作用域位置分组
   const grouped = groupByScopePosition(scopes);
