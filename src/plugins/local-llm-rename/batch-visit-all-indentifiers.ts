@@ -25,16 +25,11 @@ function getSuffixNumber(name: string): number {
 
 
 function renameConflictIndentier(name: string): string {
-  // 如果已经以下划线开头，则添加数字后缀
-  if (name.startsWith('_')) {
-    if (endWithNumber(name)) {
-      const suffixNumber = getSuffixNumber(name);
-      return name.replace(/(\d+)$/, (match) => (parseInt(match, 10) + 1).toString());
-    }
-    return `${name}1`;
+  if (endWithNumber(name)) {
+    const suffixNumber = getSuffixNumber(name);
+    return name.replace(/(\d+)$/, (match) => (parseInt(match, 10) + 1).toString());
   }
-  // 否则添加下划线前缀
-  return `_${name}`;
+  return `${name}1`;
 }
 
 export async function batchVisitAllIdentifiersGrouped(
@@ -389,9 +384,6 @@ async function scopesToString(
   if (code.length > contextWindowSize) {
     var finalCode = "";
     for (const identifier of identifiers) {
-      if (code.includes(identifier.node.name)) {
-        continue;
-      }
       identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
       finalCode += `//========================Code Snippet for ${identifier.node.name}========================\n`;
       finalCode += await scopeToString(rawCode, identifier, Math.floor(contextWindowSize / identifiers.length));
@@ -409,9 +401,6 @@ async function scopesToString(
   } else {
     var finalCode = "";
     for (const identifier of identifiers) {
-      if (code.includes(identifier.node.name)) {
-        continue;
-      }
       identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
       finalCode += `//========================Code Snippet for ${identifier.node.name}========================\n`;
       finalCode += await scopeToString(rawCode, identifier, Math.floor(contextWindowSize / identifiers.length));
