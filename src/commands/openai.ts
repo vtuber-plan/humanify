@@ -35,6 +35,7 @@ export const openai = cli()
     undefined
   )
   .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
+  .option("--unique-names", "Ensure output variable names are unique by adding numeric suffixes", false)
   .option("--batch", "Enable batch renaming mode for more efficient processing", false)
   .option(
     "--batchSize <batchSize>",
@@ -66,7 +67,8 @@ export const openai = cli()
           contextWindowSize,
           resume: opts.resume,
           batchSize,
-          systemPrompt: opts.systemPrompt
+          systemPrompt: opts.systemPrompt,
+          uniqueNames: opts.uniqueNames
         })
       : openaiRename({
           apiKey,
@@ -74,7 +76,8 @@ export const openai = cli()
           model: opts.model,
           contextWindowSize,
           resume: opts.resume,
-          systemPrompt: opts.systemPrompt
+          systemPrompt: opts.systemPrompt,
+          uniqueNames: opts.uniqueNames
         });
 
     if (opts.batch) {

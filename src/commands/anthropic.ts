@@ -35,6 +35,7 @@ export const anthropic = cli()
         undefined
     )
     .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
+    .option("--unique-names", "Ensure output variable names are unique by adding numeric suffixes", false)
     .option("--batch", "Enable batch renaming mode for more efficient processing", false)
     .option(
         "--batchSize <batchSize>",
@@ -65,7 +66,8 @@ export const anthropic = cli()
                 contextWindowSize,
                 resume: opts.resume,
                 batchSize,
-                systemPrompt: opts.systemPrompt
+                systemPrompt: opts.systemPrompt,
+                uniqueNames: opts.uniqueNames
             })
             : anthropicRename({
                 apiKey,
@@ -73,7 +75,8 @@ export const anthropic = cli()
                 model: opts.model,
                 contextWindowSize,
                 resume: opts.resume,
-                systemPrompt: opts.systemPrompt
+                systemPrompt: opts.systemPrompt,
+                uniqueNames: opts.uniqueNames
             });
 
         if (opts.batch) {
@@ -83,7 +86,7 @@ export const anthropic = cli()
         }
 
         await unminify(filename, opts.outputDir, [
-            (code: string, enableSourceMap?: boolean, filePath?: string) => babel(code, enableSourceMap, filePath),
+            (code: string, filePath?: string) => babel(code, opts.sourcemap, filePath),
             (code: string) => renameFunction(code),
             (code: string) => prettier(code)
         ], {

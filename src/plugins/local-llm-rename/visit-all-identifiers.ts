@@ -41,7 +41,8 @@ export async function visitAllIdentifiers(
   contextWindowSize: number,
   onProgress?: (percentageDone: number) => void,
   resume?: string,
-  filePath?: string
+  filePath?: string,
+  uniqueNames = false
 ): Promise<string> {
   let ast: Node | null;
   let renames: Set<string>;
@@ -110,7 +111,7 @@ export async function visitAllIdentifiers(
         renames.has(safeRenamed) ||
         smallestScope.scope.hasBinding(safeRenamed)
       ) {
-        safeRenamed = renameConflictIndentier(safeRenamed);
+        safeRenamed = uniqueNames ? renameConflictIndentier(safeRenamed) : safeRenamed + Math.random().toString(36).substr(2, 5);
       }
       renames.add(safeRenamed);
 

@@ -13,6 +13,7 @@ export function openaiRename({
   contextWindowSize,
   resume = undefined,
   systemPrompt = undefined,
+  uniqueNames = false,
 }: {
   apiKey: string;
   baseURL: string;
@@ -20,6 +21,7 @@ export function openaiRename({
   contextWindowSize: number;
   resume?: string;
   systemPrompt?: string;
+  uniqueNames?: boolean;
 }) {
   const clientOptions = createClientOptions(baseURL, {
     apiKey,
@@ -119,7 +121,8 @@ export function openaiRename({
       contextWindowSize,
       (percentage) => showPercentage(percentage, startTime),
       resume,
-      filePath
+      filePath,
+      uniqueNames
     );
   };
 }

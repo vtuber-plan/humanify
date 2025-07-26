@@ -12,6 +12,7 @@ export function anthropicBatchRename({
     resume = undefined,
     batchSize = 10,
     systemPrompt = undefined,
+    uniqueNames = false,
 }: {
     apiKey: string;
     baseURL?: string;
@@ -20,6 +21,7 @@ export function anthropicBatchRename({
     resume?: string;
     batchSize?: number;
     systemPrompt?: string;
+    uniqueNames?: boolean;
 }) {
     const clientOptions = createClientOptions(baseURL || 'https://api.anthropic.com', {
         apiKey,
@@ -51,7 +53,10 @@ export function anthropicBatchRename({
             contextWindowSize,
             (percentage) => showPercentage(percentage, startTime),
             resume,
-            batchSize
+            batchSize,
+            undefined, // filePath
+            16, // minInformationScore
+            uniqueNames
         );
     };
 }

@@ -13,6 +13,7 @@ export function openaiBatchRename({
   resume = undefined,
   batchSize = 10,
   systemPrompt = undefined,
+  uniqueNames = false,
 }: {
   apiKey: string;
   baseURL: string;
@@ -21,6 +22,7 @@ export function openaiBatchRename({
   resume?: string;
   batchSize?: number;
   systemPrompt?: string;
+  uniqueNames?: boolean;
 }) {
   const clientOptions = createClientOptions(baseURL, {
     apiKey,
@@ -163,7 +165,9 @@ export function openaiBatchRename({
       (percentage) => showPercentage(percentage, startTime),
       resume,
       batchSize,
-      filePath
+      filePath,
+      16, // minInformationScore
+      uniqueNames
     );
   };
 }

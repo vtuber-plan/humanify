@@ -14,12 +14,14 @@ export function geminiRename({
   contextWindowSize,
   resume = undefined,
   systemPrompt = undefined,
+  uniqueNames = false,
 }: {
   apiKey: string;
   model: string;
   contextWindowSize: number;
   resume?: string;
   systemPrompt?: string;
+  uniqueNames?: boolean;
 }) {
   // Google Generative AI client doesn't support custom HTTP agents directly
   // We'll create it without proxy support for now
@@ -47,7 +49,9 @@ export function geminiRename({
       },
       contextWindowSize,
       (percentage) => showPercentage(percentage, startTime),
-      resume
+      resume,
+      undefined, // filePath
+      uniqueNames
     );
   };
 }

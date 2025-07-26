@@ -37,6 +37,7 @@ export const local = cli()
     undefined
   )
   .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
+  .option("--unique-names", "Ensure output variable names are unique by adding numeric suffixes", false)
   .argument("input", "The input minified Javascript file")
   .action(async (filename, opts) => {
     if (opts.verbose) {
@@ -52,8 +53,8 @@ export const local = cli()
       seed: opts.seed ? parseInt(opts.seed) : undefined
     });
     await unminify(filename, opts.outputDir, [
-      (code: string, enableSourceMap?: boolean, filePath?: string) => babel(code, enableSourceMap, filePath),
-      (code: string) => localReanme(prompt, contextWindowSize)(code, opts.resume || !!opts.codePath, opts.codePath),
+      (code: string, filePath?: string) => babel(code, opts.sourcemap, filePath),
+      (code: string) => localReanme(prompt, contextWindowSize, opts.uniqueNames)(code, opts.resume || !!opts.codePath, opts.codePath),
       (code: string) => prettier(code)
     ], {
       generateSourceMap: opts.sourcemap

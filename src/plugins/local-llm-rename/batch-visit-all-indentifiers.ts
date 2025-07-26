@@ -40,7 +40,8 @@ export async function batchVisitAllIdentifiersGrouped(
   resume?: string,
   maxBatchSize: number = 10,
   filePath?: string,
-  minInformationScore: number = 16
+  minInformationScore: number = 16,
+  uniqueNames = false
 ): Promise<string> {
   let ast: Node | null;
   let renames: Set<string>;
@@ -137,12 +138,22 @@ export async function batchVisitAllIdentifiersGrouped(
 
       if (newName && newName !== originalName) {
         let safeRenamed = toIdentifier(newName);
-        while (
-          renames.has(safeRenamed) ||
-          identifier.scope.hasBinding(safeRenamed)
-        ) {
-          safeRenamed = renameConflictIndentier(safeRenamed);
+
+        if (uniqueNames) {
+          while (
+            renames.has(safeRenamed) ||
+            identifier.scope.hasBinding(safeRenamed)
+          ) {
+            safeRenamed = renameConflictIndentier(safeRenamed);
+          }
+        } else {
+          while (
+            identifier.scope.hasBinding(safeRenamed)
+          ) {
+            safeRenamed = renameConflictIndentier(safeRenamed);
+          }
         }
+
         renames.add(safeRenamed);
 
         identifier.scope.rename(originalName, safeRenamed);

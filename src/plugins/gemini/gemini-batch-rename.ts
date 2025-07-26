@@ -14,6 +14,7 @@ export function geminiBatchRename({
   resume = undefined,
   batchSize = 10,
   systemPrompt = undefined,
+  uniqueNames = false,
 }: {
   apiKey: string;
   model: string;
@@ -21,6 +22,7 @@ export function geminiBatchRename({
   resume?: string;
   batchSize?: number;
   systemPrompt?: string;
+  uniqueNames?: boolean;
 }) {
   // Google Generative AI client doesn't support custom HTTP agents directly
   // We'll create it without proxy support for now

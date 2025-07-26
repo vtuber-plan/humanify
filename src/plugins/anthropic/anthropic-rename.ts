@@ -11,6 +11,7 @@ export function anthropicRename({
     contextWindowSize,
     resume = undefined,
     systemPrompt = undefined,
+    uniqueNames = false,
 }: {
     apiKey: string;
     baseURL?: string;
@@ -18,6 +19,7 @@ export function anthropicRename({
     contextWindowSize: number;
     resume?: string;
     systemPrompt?: string;
+    uniqueNames?: boolean;
 }) {
     const clientOptions = createClientOptions(baseURL || 'https://api.anthropic.com', {
         apiKey,
@@ -46,7 +48,9 @@ export function anthropicRename({
             },
             contextWindowSize,
             showPercentage,
-            resume
+            resume,
+            undefined, // filePath
+            uniqueNames
         );
     };
 }
