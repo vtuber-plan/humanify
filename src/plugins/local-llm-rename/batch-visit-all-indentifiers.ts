@@ -370,7 +370,7 @@ async function scopeToString(
   if (code.length < contextWindowSize) {
     return code;
   }
-  if (surroundingPath.isProgram()) {
+  if (surroundingPath.isProgram() || code.split("\n").length < 4) {
     const start = Math.max(0, path.node.start! - Math.floor(contextWindowSize / 2));
     const end = Math.min(rawCode.length, path.node.end! + Math.floor(contextWindowSize / 2));
     const pathCode = rawCode.slice(start, end);
