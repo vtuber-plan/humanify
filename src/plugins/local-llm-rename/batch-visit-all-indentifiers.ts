@@ -102,7 +102,7 @@ export async function batchVisitAllIdentifiersGrouped(
 
   let processedCount = 0;
   let groupIndex = 0;
-  const groupGenerator = await splitOversizedGroupsGenerator(code, sortedGroups, contextWindowSize, maxBatchSize, minInformationScore);
+  const groupGenerator = await splitOversizedGroupsGenerator(ast, sortedGroups, contextWindowSize, maxBatchSize, minInformationScore);
   verbose.log(`Processing groups...`);
 
   // Process groups in scope size order (smallest to largest)
@@ -350,7 +350,7 @@ function markVisited(
 }
 
 async function scopeToString(
-  rawCode: string,
+  ast: Node,
   path: NodePath<Identifier>,
   contextWindowSize: number
 ) {
@@ -366,14 +366,18 @@ async function scopeToString(
     surroundingPath = surroundingPath.parentPath;
   }
 
-  const code = `${surroundingPath}`; // Implements a hidden `.toString()`
+  // Always use the current AST for code extraction
+  const astStringified = await transformFromAstAsync(ast);
+  const fullCode = astStringified?.code ?? "";
+  const code = `${surroundingPath}`;
   if (code.length < contextWindowSize) {
     return code;
   }
   if (surroundingPath.isProgram() || code.split("\n").length < 4) {
+    // Use the formatted code from the current AST
     const start = Math.max(0, path.node.start! - Math.floor(contextWindowSize / 2));
-    const end = Math.min(rawCode.length, path.node.end! + Math.floor(contextWindowSize / 2));
-    const pathCode = rawCode.slice(start, end);
+    const end = Math.min(fullCode.length, path.node.end! + Math.floor(contextWindowSize / 2));
+    const pathCode = fullCode.slice(start, end);
     if (pathCode && pathCode.length < contextWindowSize) {
       return pathCode;
     }
@@ -384,7 +388,7 @@ async function scopeToString(
 }
 
 async function scopesToString(
-  rawCode: string,
+  ast: Node,
   path: NodePath<Identifier>,
   contextWindowSize: number,
   identifiers: NodePath<Identifier>[],
@@ -396,8 +400,8 @@ async function scopesToString(
     var finalCode = "";
     for (const identifier of identifiers) {
       identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
-      finalCode += `//========================Code Snippet for ${identifier.node.name}========================\n`;
-      finalCode += await scopeToString(rawCode, identifier, Math.floor(contextWindowSize / identifiers.length));
+      finalCode += `\n//========================Code Snippet for ${identifier.node.name}========================\n`;
+      finalCode += await scopeToString(ast, identifier, Math.floor(contextWindowSize / identifiers.length));
       finalCode += `\n...\n`;
       identifier.node.trailingComments = [];
     }
@@ -413,8 +417,8 @@ async function scopesToString(
     var finalCode = "";
     for (const identifier of identifiers) {
       identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
-      finalCode += `//========================Code Snippet for ${identifier.node.name}========================\n`;
-      finalCode += await scopeToString(rawCode, identifier, Math.floor(contextWindowSize / identifiers.length));
+      finalCode += `\n//========================Code Snippet for ${identifier.node.name}========================\n`;
+      finalCode += await scopeToString(ast, identifier, Math.floor(contextWindowSize / identifiers.length));
       finalCode += `\n...\n`;
       identifier.node.trailingComments = [];
     }
@@ -453,7 +457,7 @@ function groupByScopePosition(
 
 // 第二步：将过大的组切分为多个批次（流式处理，减少内存占用）
 async function* splitOversizedGroupsGenerator(
-  rawCode: string,
+  ast: Node,
   groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
   contextWindowSize: number,
   maxBatchSize: number = 10,
@@ -467,7 +471,7 @@ async function* splitOversizedGroupsGenerator(
       const identifier = identifiers[i];
       if (identifiersList.length >= maxBatchSize || identifiersList.map(id => id.node.name).indexOf(identifier.node.name) != -1) {
         const firstScope = identifiersList[0];
-        const surroundingCode = await scopesToString(rawCode, firstScope, contextWindowSize, identifiersList, minInformationScore);
+        const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, identifiersList, minInformationScore);
         yield {
           identifiers: identifiersList,
           scopeKey: `${scopeKey}_${i}`,
@@ -479,7 +483,7 @@ async function* splitOversizedGroupsGenerator(
     }
 
     const firstScope = identifiersList[0];
-    const surroundingCode = await scopesToString(rawCode, firstScope, contextWindowSize, identifiersList, minInformationScore);
+    const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, identifiersList, minInformationScore);
     yield {
       identifiers: identifiersList,
       scopeKey: `${scopeKey}_${i}`,
@@ -491,7 +495,7 @@ async function* splitOversizedGroupsGenerator(
 
 // 同步版本的splitOversizedGroups用于旧的groupIdentifiersByScope
 async function splitOversizedGroups(
-  rawCode: string,
+  ast: Node,
   groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
   contextWindowSize: number,
   maxBatchSize: number = 10,
@@ -504,7 +508,7 @@ async function splitOversizedGroups(
 
     if (identifiers.length <= maxBatchSize) {
       const firstScope = identifiers[0];
-      const surroundingCode = await scopesToString(rawCode, firstScope, contextWindowSize, identifiers, minlines);
+      const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, identifiers, minlines);
       result.push({
         identifiers,
         scopeKey,
@@ -514,7 +518,7 @@ async function splitOversizedGroups(
       for (let i = 0; i < identifiers.length; i += maxBatchSize) {
         const batchIdentifiers = identifiers.slice(i, i + maxBatchSize);
         const firstScope = batchIdentifiers[0];
-        const surroundingCode = await scopesToString(rawCode, firstScope, contextWindowSize, batchIdentifiers, minlines);
+        const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, batchIdentifiers, minlines);
         result.push({
           identifiers: batchIdentifiers,
           scopeKey: `${scopeKey}_${i}`,
@@ -529,7 +533,7 @@ async function splitOversizedGroups(
 
 // 完整的分组函数：两步实现
 async function groupIdentifiersByScope(
-  rawCode: string,
+  ast: Node,
   scopes: NodePath<Identifier>[],
   contextWindowSize: number,
   maxBatchSize: number = 10,
@@ -539,7 +543,7 @@ async function groupIdentifiersByScope(
   const grouped = groupByScopePosition(scopes);
 
   // 第二步：切分过大的组
-  return await splitOversizedGroups(rawCode, grouped, contextWindowSize, maxBatchSize, minInformationScore);
+  return await splitOversizedGroups(ast, grouped, contextWindowSize, maxBatchSize, minInformationScore);
 }
 
 

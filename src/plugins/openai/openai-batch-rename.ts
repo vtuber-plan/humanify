@@ -172,6 +172,11 @@ export function openaiBatchRename({
   };
 }
 
+const browserGlobals = ["window", "document", "console", "navigator", "screen", "location", "history"];
+const nodeGlobals = ["global", "process", "console", "Buffer"];
+const commonGlobals = ["Math", "Date", "JSON", "Array", "Object", "String", "encodeURI", "decodeURI", "setTimeout", "setInterval", "eval"];
+const allGlobals = [...browserGlobals, ...nodeGlobals, ...commonGlobals];
+
 function toBatchRenamePrompt(
   names: string[],
   surroundingCode: string,
@@ -185,7 +190,10 @@ function toBatchRenamePrompt(
         ${surroundingCode}
         \`\`\`
 
-        Please provide the new names in the response as a JSON object mapping original names to new names.
+        Note:
+        1. If the name is not obfuscated, please keep the name as is. (such as ${allGlobals.join(", ")})
+        2. If the name is obfuscated, please rename it.
+        3. Please provide the new names in the response as a JSON object mapping original names to new names.
         The response should be a valid JSON string with the format:
         \`\`\`json
         {
