@@ -1,6 +1,7 @@
 import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node, identifier, cloneNode } from "@babel/types";
+import * as babelGenerator from "@babel/generator";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
 import { calculateScopeInformationScoreAST } from "../../readability-utils.js";
@@ -10,6 +11,12 @@ const traverse: typeof babelTraverse.default.default = (
     ? babelTraverse.default
     : babelTraverse.default.default
 ) as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- This hack is because pkgroll fucks up the import somehow
+
+const generate: typeof babelGenerator.default.default = (
+  typeof babelGenerator.default === "function"
+    ? babelGenerator.default
+    : babelGenerator.default.default
+) as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- Same hack for generator
 
 type Visitor = (name: string, scope: string) => Promise<string>;
 type BatchVisitor = (names: string[], scope: string) => Promise<Record<string, string>>;
@@ -231,13 +238,13 @@ function getScopeSize(scope: NodePath<Identifier>): number {
  * @param contextWindowSize 上下文窗口大小限制
  * @param minInformationScore 最小信息量阈值
  * @param identifiers 需要重命名的标识符列表，用于添加注释
- * @returns 扩展后的作用域代码，包含注释提示
+ * @returns 扩展后的作用域代码和路径
  */
 async function expandScopeIfInsufficientAST(
   path: NodePath<Identifier>,
   minInformationScore: number = 16,
   identifiers: NodePath<Identifier>[] = []
-): Promise<string> {
+): Promise<{code: string, path: NodePath}> {
   let currentPath = closestSurroundingContextPath(path);
 
   // Add comment
@@ -259,7 +266,7 @@ async function expandScopeIfInsufficientAST(
       for (const identifier of identifiers) {
         identifier.node.trailingComments = [];
       }
-      return currentCode;
+      return { code: currentCode, path: currentPath };
     }
   }
 
@@ -272,14 +279,14 @@ async function expandScopeIfInsufficientAST(
 
     if (parentAst) {
       // const analysisScore = calculateScopeInformationScoreAST(parentPath);
-      const analysisScore = currentCode.split("\n").length;
+      const analysisScore = parentCode.split("\n").length;
       if (analysisScore >= minInformationScore) {
         // 添加注释到指定变量
         // restore identifiers
         for (const identifier of identifiers) {
           identifier.node.trailingComments = [];
         }
-        return parentCode;
+        return { code: parentCode, path: parentPath };
       }
     }
 
@@ -291,7 +298,68 @@ async function expandScopeIfInsufficientAST(
   for (const identifier of identifiers) {
     identifier.node.trailingComments = [];
   }
-  return currentCode;
+  return { code: currentCode, path: currentPath };
+}
+
+/**
+ * 仅返回扩展后的代码（向后兼容的便利函数）
+ */
+async function expandScopeIfInsufficientASTCode(
+  path: NodePath<Identifier>,
+  minInformationScore: number = 16,
+  identifiers: NodePath<Identifier>[] = []
+): Promise<string> {
+  const result = await expandScopeIfInsufficientAST(path, minInformationScore, identifiers);
+  return result.code;
+}
+
+/**
+ * 找到包含所有标识符的最小公共上下文
+ */
+function findMinimalCommonContext(identifiers: NodePath<Identifier>[]): NodePath | null {
+  if (identifiers.length === 0) return null;
+  if (identifiers.length === 1) return closestSurroundingContextPath(identifiers[0]);
+  
+  // 从第一个标识符开始，找到它的上下文路径
+  let commonContext = closestSurroundingContextPath(identifiers[0]);
+  
+  // 对于每个其他的标识符，找到它们的公共祖先
+  for (let i = 1; i < identifiers.length; i++) {
+    const currentContext = closestSurroundingContextPath(identifiers[i]);
+    commonContext = findCommonAncestor(commonContext, currentContext);
+    
+    // 如果已经到达程序级别，就直接返回
+    if (commonContext.isProgram()) {
+      break;
+    }
+  }
+  
+  return commonContext;
+}
+
+/**
+ * 找到两个路径的最小公共祖先
+ */
+function findCommonAncestor(path1: NodePath, path2: NodePath): NodePath {
+  // 构建path1的祖先链
+  const ancestors1 = new Set<NodePath>();
+  let current1: NodePath | null = path1;
+  while (current1) {
+    ancestors1.add(current1);
+    current1 = current1.parentPath;
+  }
+  
+  // 沿着path2的祖先链向上查找，找到第一个共同的祖先
+  let current2: NodePath | null = path2;
+  while (current2) {
+    if (ancestors1.has(current2)) {
+      return current2;
+    }
+    current2 = current2.parentPath;
+  }
+  
+  // 理论上不应该到达这里，因为至少程序节点是共同祖先
+  throw new Error("No common ancestor found");
 }
 
 function expandScope(surroundingScope: NodePath<Node>, minInformationScore: number = 16): NodePath<Node> {
@@ -366,25 +434,189 @@ async function scopeToString(
     surroundingPath = surroundingPath.parentPath;
   }
 
-  // Always use the current AST for code extraction
-  const astStringified = await transformFromAstAsync(ast);
-  const fullCode = astStringified?.code ?? "";
   const code = `${surroundingPath}`;
   if (code.length < contextWindowSize) {
     return code;
   }
-  if (surroundingPath.isProgram() || code.split("\n").length < 4) {
-    // Use the formatted code from the current AST
-    const start = Math.max(0, path.node.start! - Math.floor(contextWindowSize / 2));
-    const end = Math.min(fullCode.length, path.node.end! + Math.floor(contextWindowSize / 2));
-    const pathCode = fullCode.slice(start, end);
-    if (pathCode && pathCode.length < contextWindowSize) {
-      return pathCode;
-    }
-    return pathCode?.slice(0, contextWindowSize) ?? "";
-  } else {
-    return code.slice(0, contextWindowSize);
+
+  // 构建上下文代码，通过遍历兄弟节点
+  return buildContextFromSiblings(path, contextWindowSize, ast);
+}
+
+function buildContextFromSiblings(
+  path: NodePath<Identifier>,
+  contextWindowSize: number,
+  ast?: Node
+): string {
+  // 找到当前节点所在的容器节点（如函数体、程序等）
+  let containerPath = path.getFunctionParent() || path.scope.path;
+  
+  // 如果容器是函数，直接返回整个函数的表示
+  if (containerPath.isFunction()) {
+    return `${containerPath}`.slice(0, contextWindowSize);
   }
+  
+  // 如果容器是Program，使用其body
+  if (containerPath.isProgram()) {
+    const statements = containerPath.node.body;
+    return buildContextFromStatements(statements, path, contextWindowSize, ast);
+  }
+  
+  // 如果容器有body（如函数、块语句等）
+  if ('body' in containerPath.node && containerPath.node.body) {
+    let statements;
+    if (Array.isArray(containerPath.node.body)) {
+      statements = containerPath.node.body;
+    } else if ('body' in containerPath.node.body && containerPath.node.body.body && Array.isArray(containerPath.node.body.body)) {
+      statements = containerPath.node.body.body;
+    } else {
+      // 单个语句，返回整个容器的代码
+      return `${containerPath}`.slice(0, contextWindowSize);
+    }
+    
+    return buildContextFromStatements(statements, path, contextWindowSize, ast);
+  }
+  
+  // 回退到原来的逻辑
+  return `${containerPath}`.slice(0, contextWindowSize);
+}
+
+// 查找全局变量或函数的所有引用位置
+function findGlobalReferences(
+  ast: Node,
+  targetName: string,
+  targetPath: NodePath<Identifier>
+): any[] {
+  const references: any[] = [];
+  
+  // 遍历整个AST查找引用
+  traverse(ast, {
+    Identifier(path) {
+      // 跳过目标节点本身
+      if (path.node === targetPath.node) {
+        return;
+      }
+      
+      // 如果标识符名称匹配
+      if (path.node.name === targetName) {
+        // 检查是否是引用（不是声明）
+        if (path.isReferencedIdentifier()) {
+          // 获取包含该引用的语句
+          let statementPath = path.getStatementParent();
+          if (statementPath && statementPath.node) {
+            references.push(statementPath.node);
+          }
+        }
+      }
+    }
+  });
+  
+  return references;
+}
+
+// 检查标识符是否是全局变量或函数
+function isGlobalIdentifier(path: NodePath<Identifier>): boolean {
+  const binding = path.scope.getBinding(path.node.name);
+  if (!binding) {
+    // 没有找到绑定，可能是全局变量
+    return true;
+  }
+  
+  // 如果绑定在程序级别的作用域中，也认为是全局的
+  const programScope = path.scope.getProgramParent();
+  return binding.scope === programScope;
+}
+
+function buildContextFromStatements(
+  statements: any[],
+  targetPath: NodePath<Identifier>,
+  contextWindowSize: number,
+  ast?: Node
+): string {
+  // 收集额外的引用语句（如果是全局变量/函数）
+  let additionalStatements: any[] = [];
+  
+  if (ast && isGlobalIdentifier(targetPath)) {
+    const globalReferences = findGlobalReferences(ast, targetPath.node.name, targetPath);
+    // 过滤掉已经在当前statements中的引用，避免重复
+    additionalStatements = globalReferences.filter(refStmt => 
+      !statements.some(stmt => stmt.start === refStmt.start && stmt.end === refStmt.end)
+    );
+  }
+  
+  // 找到目标节点所在的语句索引
+  let targetIndex = -1;
+  for (let i = 0; i < statements.length; i++) {
+    const stmt = statements[i];
+    if (stmt.start <= targetPath.node.start! && stmt.end >= targetPath.node.end!) {
+      targetIndex = i;
+      break;
+    }
+  }
+  
+  if (targetIndex === -1) {
+    // 未找到目标语句，返回所有语句的字符串表示
+    const allCode = statements.map(stmt => generate(stmt).code).join('\n');
+    return allCode.slice(0, contextWindowSize);
+  }
+  
+  // 从目标语句开始，向两侧扩展
+  let contextCode = generate(statements[targetIndex]).code;
+  let beforeIndex = targetIndex - 1;
+  let afterIndex = targetIndex + 1;
+  
+  // 交替添加前面和后面的语句，直到达到窗口大小限制
+  while ((beforeIndex >= 0 || afterIndex < statements.length) && contextCode.length < contextWindowSize) {
+    let added = false;
+    
+    // 添加前面的语句
+    if (beforeIndex >= 0) {
+      const beforeStmt = generate(statements[beforeIndex]).code;
+      const newCode = beforeStmt + '\n' + contextCode;
+      if (newCode.length <= contextWindowSize) {
+        contextCode = newCode;
+        beforeIndex--;
+        added = true;
+      }
+    }
+    
+    // 添加后面的语句
+    if (afterIndex < statements.length && contextCode.length < contextWindowSize) {
+      const afterStmt = generate(statements[afterIndex]).code;
+      const newCode = contextCode + '\n' + afterStmt;
+      if (newCode.length <= contextWindowSize) {
+        contextCode = newCode;
+        afterIndex++;
+        added = true;
+      }
+    }
+    
+    // 如果无法添加更多内容，跳出循环
+    if (!added) break;
+  }
+  
+  // 添加全局引用语句到context中（如果还有空间）
+  if (additionalStatements.length > 0 && contextCode.length < contextWindowSize) {
+    const remainingSize = contextWindowSize - contextCode.length;
+    let referencesCode = "\n\n// === Global References ===\n";
+    
+    for (const refStmt of additionalStatements) {
+      const refCode = generate(refStmt).code;
+      if (referencesCode.length + refCode.length + 1 <= remainingSize) {
+        referencesCode += refCode + '\n';
+      } else {
+        break;
+      }
+    }
+    
+    if (referencesCode.length > remainingSize) {
+      referencesCode = referencesCode.slice(0, remainingSize);
+    }
+    
+    contextCode += referencesCode;
+  }
+  
+  return contextCode;
 }
 
 async function scopesToString(
@@ -395,7 +627,22 @@ async function scopesToString(
   minlines: number = 16
 ): Promise<string> {
   // 使用AST检查信息量并扩展作用域，添加注释到指定变量
-  const code = await expandScopeIfInsufficientAST(path, minlines, identifiers);
+  const result = await expandScopeIfInsufficientAST(path, minlines, identifiers);
+  let code = result.code;
+  const expandedPath = result.path;
+  
+  // 如果扩展的路径是全程序级别，则找到包含所有identifiers的最小context
+  if (expandedPath.isProgram() && identifiers.length > 0) {
+    const minimalContext = findMinimalCommonContext(identifiers);
+    if (minimalContext && !minimalContext.isProgram()) {
+      // 使用最小公共上下文的代码
+      code = `${minimalContext}`;
+    } else {
+      // 如果最小公共上下文仍然是程序级别，则设置为空
+      code = "";
+    }
+  }
+  
   if (code.length > contextWindowSize) {
     var finalCode = "";
     for (const identifier of identifiers) {
