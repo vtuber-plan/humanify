@@ -4,7 +4,35 @@ import { Identifier, toIdentifier, Node, identifier, cloneNode } from "@babel/ty
 import * as babelGenerator from "@babel/generator";
 import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
-import { calculateScopeInformationScoreAST } from "../../readability-utils.js";
+
+const WEB_API_NAMES_LIST = [
+  'Headers',
+  'Set',
+  'Map',
+  'FormData',
+  'URL',
+  'URLSearchParams',
+  'Blob',
+  'TextEncoder',
+  'TextDecoder',
+  'ReadableStream',
+  'WritableStream',
+  'TransformStream',
+  'Response',
+  'Request',
+  'ArrayBuffer',
+  'DataView',
+  'Uint8Array',
+  'Uint16Array',
+  'Uint32Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Float32Array',
+  'Float64Array',
+  'Promise',
+  'fetch' // 注意：fetch在较新Node.js版本中为全局可用
+];
 
 const traverse: typeof babelTraverse.default.default = (
   typeof babelTraverse.default === "function"
@@ -149,13 +177,14 @@ export async function batchVisitAllIdentifiersGrouped(
         if (uniqueNames) {
           while (
             renames.has(safeRenamed) ||
-            identifier.scope.hasBinding(safeRenamed)
+            identifier.scope.hasBinding(safeRenamed) ||
+            WEB_API_NAMES_LIST.includes(safeRenamed)
           ) {
             safeRenamed = renameConflictIndentier(safeRenamed);
           }
         } else {
           while (
-            identifier.scope.hasBinding(safeRenamed)
+            identifier.scope.hasBinding(safeRenamed) || WEB_API_NAMES_LIST.includes(safeRenamed)
           ) {
             safeRenamed = renameConflictIndentier(safeRenamed);
           }
