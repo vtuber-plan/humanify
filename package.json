@@ -59,7 +59,7 @@
     "https-proxy-agent": "^7.0.6",
     "ipull": "^3.9.0",
     "node-llama-cpp": "^3.0.0-beta.40",
-    "openai": "^4.55.1",
+    "openai": "^5.22.1",
     "source-map": "^0.7.4",
     "@types/source-map": "^0.5.2",
     "tsx": "^4.16.2",
