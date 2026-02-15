@@ -201,7 +201,7 @@ const renamedCode = await openaiBatchRename({
 })(code);
 ```
 
-See [Batch Rename Documentation](docs/batch-rename.md) for detailed usage instructions.
+See the [Batch Renaming Feature](#batch-renaming-feature) section above for detailed usage instructions.
 
 ## Contributing
 

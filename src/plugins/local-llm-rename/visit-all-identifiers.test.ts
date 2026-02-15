@@ -1,6 +1,10 @@
 import assert from "assert";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
 import test from "node:test";
 import { visitAllIdentifiers } from "./visit-all-identifiers.js";
+import { resolveResumeStatePath } from "../../resume-utils.js";
 
 test("no-op returns the same code", async () => {
   const code = `const a = 1;`;
@@ -275,11 +279,26 @@ const a = 1;
 const b = 1;
 `.trim();
   const result = await visitAllIdentifiers(code, async () => "foo", 200);
+  assert.match(result, /^const foo = 1;\nconst foo[a-z0-9]+ = 1;$/);
+  assert.ok(!result.includes("const a = 1;"));
+  assert.ok(!result.includes("const b = 1;"));
+});
+
+test("should generate deterministic collision suffixes when uniqueNames is false", async () => {
+  const code = `
+const a = 1;
+const b = 2;
+const c = 3;
+`.trim();
+  const first = await visitAllIdentifiers(code, async () => "foo", 200);
+  const second = await visitAllIdentifiers(code, async () => "foo", 200);
+  assert.equal(first, second);
   assert.equal(
-    result,
+    first,
     `
 const foo = 1;
-const _foo = 1;
+const foo1 = 2;
+const foo2 = 3;
 `.trim()
   );
 });
@@ -290,13 +309,8 @@ const foo = 1;
 const bar = 2;
 `.trim();
   const result = await visitAllIdentifiers(code, async () => "bar", 200);
-  assert.equal(
-    result,
-    `
-const _bar = 1;
-const bar = 2;
-`.trim()
-  );
+  assert.match(result, /^const bar[a-z0-9]+ = 1;\nconst bar = 2;$/);
+  assert.ok(!result.includes("const foo = 1;"));
 });
 
 test("should not craash to 'arguments' assigning", async () => {
@@ -314,4 +328,31 @@ function foobar() {
 }
     `.trim()
   );
+});
+
+test("resume path should never overwrite or delete the original code file", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "humanify-resume-"));
+  const resumeTarget = path.join(tempDir, "resume-target.js");
+  const originalContent = "const untouched = 1;\n";
+  const sidecarPath = resolveResumeStatePath(resumeTarget);
+  await fs.writeFile(resumeTarget, originalContent, "utf8");
+
+  try {
+    await visitAllIdentifiers(
+      "const a = 1;",
+      async (name) => name,
+      200,
+      undefined,
+      resumeTarget
+    );
+
+    const targetExists = await fs.stat(resumeTarget).then(() => true).catch(() => false);
+    assert.equal(targetExists, true);
+    assert.equal(await fs.readFile(resumeTarget, "utf8"), originalContent);
+
+    const sidecarExists = await fs.stat(sidecarPath).then(() => true).catch(() => false);
+    assert.equal(sidecarExists, false);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });

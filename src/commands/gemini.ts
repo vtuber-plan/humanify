@@ -7,7 +7,7 @@ import { geminiRename } from "../plugins/gemini/gemini-rename.js";
 import { geminiBatchRename } from "../plugins/gemini/gemini-batch-rename.js";
 import { env } from "../env.js";
 import { DEFAULT_CONTEXT_WINDOW_SIZE } from "./default-args.js";
-import { parseNumber } from "../number-utils.js";
+import { parseNumber, parsePositiveNumber } from "../number-utils.js";
 
 export const azure = cli()
   .name("gemini")
@@ -26,7 +26,7 @@ export const azure = cli()
   .option("--verbose", "Show verbose output")
   .option(
     "--resume <resume>",
-    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+    "Path to the code file being processed. Humanify stores resume state in a safe sidecar file next to it",
     undefined
   )
   .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
@@ -50,7 +50,7 @@ export const azure = cli()
 
     const apiKey = opts.apiKey ?? env("GEMINI_API_KEY");
     const contextWindowSize = parseNumber(opts.contextSize);
-    const batchSize = parseNumber(opts.batchSize);
+    const batchSize = parsePositiveNumber(opts.batchSize, "batchSize");
 
     // 根据batch参数选择使用普通重命名还是批量重命名
     const renameFunction = opts.batch 

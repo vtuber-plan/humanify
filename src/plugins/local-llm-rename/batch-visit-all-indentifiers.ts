@@ -2,7 +2,13 @@ import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node, identifier, cloneNode } from "@babel/types";
 import * as babelGenerator from "@babel/generator";
-import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
+import {
+  ResumeState,
+  saveResumeState,
+  loadResumeState,
+  deleteResumeState,
+  resolveResumeStatePath
+} from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
 
 const WEB_API_NAMES_LIST = [
@@ -84,11 +90,22 @@ export async function batchVisitAllIdentifiersGrouped(
   let scopes: NodePath<Identifier>[];
   let currentIndex = 0;
 
-  const sessionId = resume;
+  if (maxBatchSize <= 0) {
+    throw new Error(`Invalid batch size: ${maxBatchSize}. batchSize must be greater than 0.`);
+  }
 
-  // Handle resume functionality - if codePath is provided, it implies resume
+  const resumeCodePath = resume?.trim();
+  const sessionId = resumeCodePath ? resolveResumeStatePath(resumeCodePath) : undefined;
+
+  // Resume from safe sidecar state; keep one-time legacy fallback for old state path layout.
   if (sessionId) {
-    const resumeState = await loadResumeState(sessionId);
+    let resumeState = await loadResumeState(sessionId);
+    if (!resumeState && resumeCodePath) {
+      resumeState = await loadResumeState(resumeCodePath);
+      if (resumeState) {
+        verbose.log(`Loaded legacy resume state from ${resumeCodePath}`);
+      }
+    }
     if (resumeState) {
       ast = await parseAsync(resumeState.code, { sourceType: "unambiguous" });
       if (!ast) {
@@ -148,22 +165,30 @@ export async function batchVisitAllIdentifiersGrouped(
       continue;
     }
 
-    // 检查
-    const unvisitedIdentifiers = group.identifiers;
+    // 只处理全局尚未处理过的名字，避免跨作用域同名重复发给 LLM
+    const unvisitedIdentifiers = group.identifiers.filter((identifier) => !hasVisited(identifier, visited));
     if (unvisitedIdentifiers.length === 0) {
       processedCount += group.identifiers.length;
       groupIndex++;
       continue;
     }
 
-    const identifierNames = unvisitedIdentifiers.map(id => id.node.name);
+    const uniqueIdentifierByName = new Map<string, NodePath<Identifier>>();
+    for (const identifier of unvisitedIdentifiers) {
+      const name = identifier.node.name;
+      if (!uniqueIdentifierByName.has(name)) {
+        uniqueIdentifierByName.set(name, identifier);
+      }
+    }
+    const uniqueIdentifiers = Array.from(uniqueIdentifierByName.values());
+    const identifierNames = uniqueIdentifiers.map(id => id.node.name);
     const surroundingCode = group.surroundingCode;
 
     // 批量重命名这个组中的所有identifier
     const renameMap = await visitor(identifierNames, surroundingCode);
 
     // 应用重命名
-    for (const identifier of unvisitedIdentifiers) {
+    for (const identifier of uniqueIdentifiers) {
       const originalName = identifier.node.name;
       // 不包含key originalName
       if (!renameMap.hasOwnProperty(originalName)) {
@@ -214,7 +239,7 @@ export async function batchVisitAllIdentifiersGrouped(
         visited: Array.from(visited),
         currentIndex: processedCount,
         totalScopes: totalIdentifiers,
-        codePath: resume || ""
+        codePath: filePath || resumeCodePath || ""
       };
       await saveResumeState(resumeState, sessionId);
     }
@@ -389,40 +414,6 @@ function findCommonAncestor(path1: NodePath, path2: NodePath): NodePath {
   
   // 理论上不应该到达这里，因为至少程序节点是共同祖先
   throw new Error("No common ancestor found");
-}
-
-function expandScope(surroundingScope: NodePath<Node>, minInformationScore: number = 16): NodePath<Node> {
-    const currentAst = surroundingScope;
-    if (currentAst) {
-      // const analysisScore = calculateScopeInformationScoreAST(currentAst);
-      const analysisScore = `${currentAst}`.split("\n").length;
-      if (analysisScore >= minInformationScore) {
-        return currentAst;
-      }
-    }
-
-    if (!currentAst.parentPath) {
-      return currentAst;
-    }
-
-    // 信息不足，向上扩展作用域
-    let parentPath = currentAst.parentPath;
-
-    while (parentPath && !parentPath.isProgram()) {
-      if (parentPath) {
-        // const analysisScore = calculateScopeInformationScoreAST(parentPath);
-        const analysisScore = `${parentPath}`.split("\n").length;
-        if (analysisScore >= minInformationScore) {
-          return parentPath;
-        }
-      }
-
-      if (!parentPath.parentPath) {
-        break;
-      }
-      parentPath = parentPath.parentPath;
-    }
-    return parentPath;
 }
 
 // 按作用域范围从小到大排序组
@@ -716,8 +707,7 @@ function groupByScopePosition(
   const scopeGroups = new Map<string, NodePath<Identifier>[]>();
 
   for (const scope of scopes) {
-    var surroundingScope = expandScope(scope, 30);
-    const scopeKey = getScopePositionKey(surroundingScope as NodePath<Identifier>);
+    const scopeKey = getScopePositionKey(scope);
 
     if (!scopeGroups.has(scopeKey)) {
       scopeGroups.set(scopeKey, []);
@@ -742,10 +732,13 @@ async function* splitOversizedGroupsGenerator(
   for (const group of groups) {
     const { identifiers, scopeKey } = group;
 
-    var identifiersList = [];
+    let identifiersList: NodePath<Identifier>[] = [];
     for (var i = 0; i < identifiers.length; i++) {
       const identifier = identifiers[i];
       if (identifiersList.length >= maxBatchSize || identifiersList.map(id => id.node.name).indexOf(identifier.node.name) != -1) {
+        if (identifiersList.length === 0) {
+          continue;
+        }
         const firstScope = identifiersList[0];
         const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, identifiersList, minInformationScore);
         yield {
@@ -758,6 +751,9 @@ async function* splitOversizedGroupsGenerator(
       identifiersList.push(identifier);
     }
 
+    if (identifiersList.length === 0) {
+      continue;
+    }
     const firstScope = identifiersList[0];
     const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, identifiersList, minInformationScore);
     yield {

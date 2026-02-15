@@ -6,7 +6,7 @@ import { openaiRename } from "../plugins/openai/openai-rename.js";
 import { openaiBatchRename } from "../plugins/openai/openai-batch-rename.js";
 import { verbose } from "../verbose.js";
 import { env } from "../env.js";
-import { parseNumber } from "../number-utils.js";
+import { parseNumber, parsePositiveNumber } from "../number-utils.js";
 import { DEFAULT_CONTEXT_WINDOW_SIZE } from "./default-args.js";
 
 export const openai = cli()
@@ -31,7 +31,7 @@ export const openai = cli()
   )
   .option(
     "--resume <resume>",
-    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+    "Path to the code file being processed. Humanify stores resume state in a safe sidecar file next to it",
     undefined
   )
   .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
@@ -56,7 +56,7 @@ export const openai = cli()
     const apiKey = opts.apiKey ?? env("OPENAI_API_KEY");
     const baseURL = opts.baseURL;
     const contextWindowSize = parseNumber(opts.contextSize);
-    const batchSize = parseNumber(opts.batchSize);
+    const batchSize = parsePositiveNumber(opts.batchSize, "batchSize");
     
     // 根据batch参数选择使用普通重命名还是批量重命名
     const renameFunction = opts.batch 
@@ -87,7 +87,7 @@ export const openai = cli()
     }
 
     await unminify(filename, opts.outputDir, [
-      (code: string, filePath?: string) => babel(code, false, filePath),
+      (code: string, filePath?: string) => babel(code, opts.sourcemap, filePath),
       (code: string, filePath?: string) => renameFunction(code, filePath),
       (code: string) => prettier(code)
     ], {

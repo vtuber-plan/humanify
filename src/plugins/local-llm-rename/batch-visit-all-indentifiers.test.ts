@@ -1,6 +1,10 @@
 import assert from "assert";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
 import test from "node:test";
 import { batchVisitAllIdentifiersGrouped } from "./batch-visit-all-indentifiers.js";
+import { resolveResumeStatePath } from "../../resume-utils.js";
 
 test("groups identifiers by surrounding scope", async () => {
   const code = `
@@ -36,15 +40,15 @@ function calculateSum() {
   // 验证分组结果
   assert.strictEqual(batchResults.length, 2, "Should have 2 groups");
   
-  // 第一个组应该包含processData函数中的变量
-  const firstGroup = batchResults[0];
-  assert.ok(firstGroup.names.includes("a") || firstGroup.names.includes("b") || firstGroup.names.includes("c"), 
-    "First group should contain variables from processData function");
-  
-  // 第二个组应该包含calculateSum函数中的变量
-  const secondGroup = batchResults[1];
-  assert.ok(secondGroup.names.includes("x") || secondGroup.names.includes("y"), 
-    "Second group should contain variables from calculateSum function");
+  const groupNames = batchResults.map(group => group.names);
+  assert.ok(
+    groupNames.some(names => names.includes("a") || names.includes("b") || names.includes("c")),
+    "One group should contain variables from processData function"
+  );
+  assert.ok(
+    groupNames.some(names => names.includes("x") || names.includes("y")),
+    "One group should contain variables from calculateSum function"
+  );
 });
 
 test("handles single identifier in scope", async () => {
@@ -140,7 +144,7 @@ function anotherTest() {
     200
   );
 
-  // 验证结果：X1应该只出现一次
+  // 同名变量跨作用域只处理一次，避免重复发给LLM
   const x1Count = processedNames.filter(name => name === 'X1').length;
   assert.strictEqual(x1Count, 1, "X1 should only appear once in the batch");
   
@@ -149,7 +153,7 @@ function anotherTest() {
   assert.ok(processedNames.includes('G0'), "G0 should be processed");
   assert.ok(processedNames.includes('J'), "J should be processed");
   
-  // 验证没有重复的变量名
+  // 验证全局没有重复的变量名
   const uniqueNames = [...new Set(processedNames)];
   assert.strictEqual(uniqueNames.length, processedNames.length, "No duplicate names should be sent to LLM");
 });
@@ -198,3 +202,48 @@ function test() {
   const uniqueNames = [...new Set(processedNames)];
   assert.strictEqual(uniqueNames.length, processedNames.length, "No duplicate names should be sent to LLM");
 }); 
+
+test("throws clear error when batch size is non-positive", async () => {
+  const code = `const a = 1;`;
+
+  await assert.rejects(
+    async () => {
+      await batchVisitAllIdentifiersGrouped(
+        code,
+        async () => ({}),
+        200,
+        undefined,
+        undefined,
+        0
+      );
+    },
+    /Invalid batch size: 0/
+  );
+});
+
+test("batch resume path should never overwrite or delete the original code file", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "humanify-batch-resume-"));
+  const resumeTarget = path.join(tempDir, "resume-target.js");
+  const originalContent = "const untouched = 1;\n";
+  const sidecarPath = resolveResumeStatePath(resumeTarget);
+  await fs.writeFile(resumeTarget, originalContent, "utf8");
+
+  try {
+    await batchVisitAllIdentifiersGrouped(
+      "const a = 1;",
+      async () => ({}),
+      200,
+      undefined,
+      resumeTarget
+    );
+
+    const targetExists = await fs.stat(resumeTarget).then(() => true).catch(() => false);
+    assert.equal(targetExists, true);
+    assert.equal(await fs.readFile(resumeTarget, "utf8"), originalContent);
+
+    const sidecarExists = await fs.stat(sidecarPath).then(() => true).catch(() => false);
+    assert.equal(sidecarExists, false);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

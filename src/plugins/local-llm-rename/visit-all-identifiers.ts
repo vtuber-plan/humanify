@@ -1,7 +1,13 @@
 import { parseAsync, transformFromAstAsync, NodePath } from "@babel/core";
 import * as babelTraverse from "@babel/traverse";
 import { Identifier, toIdentifier, Node } from "@babel/types";
-import { ResumeState, saveResumeState, loadResumeState, deleteResumeState } from "../../resume-utils.js";
+import {
+  ResumeState,
+  saveResumeState,
+  loadResumeState,
+  deleteResumeState,
+  resolveResumeStatePath
+} from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
 
 const traverse: typeof babelTraverse.default.default = (
@@ -35,6 +41,14 @@ function renameConflictIndentier(name: string): string {
   return `_${name}`;
 }
 
+function renameConflictIdentifierWithDeterministicSuffix(name: string): string {
+  if (endWithNumber(name)) {
+    const suffixNumber = getSuffixNumber(name);
+    return name.replace(/(\d+)$/, (match) => (parseInt(match, 10) + 1).toString());
+  }
+  return `${name}1`;
+}
+
 export async function visitAllIdentifiers(
   code: string,
   visitor: Visitor,
@@ -50,11 +64,18 @@ export async function visitAllIdentifiers(
   let scopes: NodePath<Identifier>[];
   let currentIndex = 0;
 
-  const sessionId = resume;
+  const resumeCodePath = resume?.trim();
+  const sessionId = resumeCodePath ? resolveResumeStatePath(resumeCodePath) : undefined;
   
-  // Handle resume functionality - if codePath is provided, it implies resume
+  // Resume from safe sidecar state; keep one-time legacy fallback for old state path layout.
   if (sessionId) {
-    const resumeState = await loadResumeState(sessionId);
+    let resumeState = await loadResumeState(sessionId);
+    if (!resumeState && resumeCodePath) {
+      resumeState = await loadResumeState(resumeCodePath);
+      if (resumeState) {
+        verbose.log(`Loaded legacy resume state from ${resumeCodePath}`);
+      }
+    }
     if (resumeState) {
       ast = await parseAsync(resumeState.code, { sourceType: "unambiguous" });
       if (!ast) {
@@ -111,7 +132,9 @@ export async function visitAllIdentifiers(
         renames.has(safeRenamed) ||
         smallestScope.scope.hasBinding(safeRenamed)
       ) {
-        safeRenamed = uniqueNames ? renameConflictIndentier(safeRenamed) : safeRenamed + Math.random().toString(36).substr(2, 5);
+        safeRenamed = uniqueNames
+          ? renameConflictIndentier(safeRenamed)
+          : renameConflictIdentifierWithDeterministicSuffix(safeRenamed);
       }
       renames.add(safeRenamed);
 
@@ -132,7 +155,7 @@ export async function visitAllIdentifiers(
         visited: Array.from(visited),
         currentIndex: i + 1,
         totalScopes: scopes.length,
-        codePath: resume || "",
+        codePath: filePath || resumeCodePath || "",
       };
       await saveResumeState(resumeState, sessionId);
     }

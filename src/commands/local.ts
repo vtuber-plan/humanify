@@ -33,7 +33,7 @@ export const local = cli()
   )
   .option(
     "--codePath <codePath>",
-    "The path to the code file being processed, used for resuming. Providing this automatically enables resume mode",
+    "Path to the code file being processed. Humanify stores resume state in a safe sidecar file next to it. Providing this enables resume mode",
     undefined
   )
   .option("--sourcemap", "Generate source map files mapping original to deobfuscated code", false)
