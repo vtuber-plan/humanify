@@ -89,6 +89,8 @@ export async function batchVisitAllIdentifiersGrouped(
   let visited: Set<string>;
   let scopes: NodePath<Identifier>[];
   let currentIndex = 0;
+  let currentCodeSnapshot = code;
+  let astDirty = false;
 
   if (maxBatchSize <= 0) {
     throw new Error(`Invalid batch size: ${maxBatchSize}. batchSize must be greater than 0.`);
@@ -111,6 +113,7 @@ export async function batchVisitAllIdentifiersGrouped(
       if (!ast) {
         throw new Error("Failed to parse code");
       }
+      currentCodeSnapshot = resumeState.code;
       renames = new Set(resumeState.renames);
       visited = new Set(resumeState.visited);
       scopes = await findScopes(ast);
@@ -154,14 +157,40 @@ export async function batchVisitAllIdentifiersGrouped(
 
   let processedCount = 0;
   let groupIndex = 0;
-  const groupGenerator = await splitOversizedGroupsGenerator(ast, sortedGroups, contextWindowSize, maxBatchSize, minInformationScore);
+  const groupGenerator = splitOversizedGroupsGenerator(sortedGroups, maxBatchSize);
   verbose.log(`Processing groups...`);
 
+  async function saveProgressIfNeeded() {
+    if (!sessionId) return;
+    const checkpointInterval = astDirty ? 5 : 200;
+    if (groupIndex % checkpointInterval !== 0 && processedCount !== totalIdentifiers) return;
+
+    if (astDirty) {
+      const newCodeResult = await transformFromAstAsync(ast);
+      if (!newCodeResult || !newCodeResult.code) {
+        throw new Error("Failed to stringify code");
+      }
+      currentCodeSnapshot = newCodeResult.code;
+      astDirty = false;
+    }
+
+    const resumeState: ResumeState = {
+      code: currentCodeSnapshot,
+      renames: Array.from(renames),
+      visited: Array.from(visited),
+      currentIndex: processedCount,
+      totalScopes: totalIdentifiers,
+      codePath: filePath || resumeCodePath || ""
+    };
+    await saveResumeState(resumeState, sessionId);
+  }
+
   // Process groups in scope size order (smallest to largest)
-  for await (const group of groupGenerator) {
+  for (const group of groupGenerator) {
     if (processedCount < currentIndex) {
       processedCount += group.identifiers.length;
       groupIndex++;
+      onProgress?.(processedCount / totalIdentifiers);
       continue;
     }
 
@@ -170,6 +199,8 @@ export async function batchVisitAllIdentifiersGrouped(
     if (unvisitedIdentifiers.length === 0) {
       processedCount += group.identifiers.length;
       groupIndex++;
+      onProgress?.(processedCount / totalIdentifiers);
+      await saveProgressIfNeeded();
       continue;
     }
 
@@ -182,7 +213,14 @@ export async function batchVisitAllIdentifiersGrouped(
     }
     const uniqueIdentifiers = Array.from(uniqueIdentifierByName.values());
     const identifierNames = uniqueIdentifiers.map(id => id.node.name);
-    const surroundingCode = group.surroundingCode;
+    const contextSourcePath = uniqueIdentifiers[0] ?? group.identifiers[0];
+    const surroundingCode = await scopesToString(
+      ast,
+      contextSourcePath,
+      contextWindowSize,
+      uniqueIdentifiers,
+      minInformationScore
+    );
 
     // 批量重命名这个组中的所有identifier
     const renameMap = await visitor(identifierNames, surroundingCode);
@@ -218,6 +256,7 @@ export async function batchVisitAllIdentifiersGrouped(
         renames.add(safeRenamed);
 
         identifier.scope.rename(originalName, safeRenamed);
+        astDirty = true;
         verbose.log(`Renamed ${originalName} to ${safeRenamed}`);
       }
       markVisited(identifier, originalName, visited);
@@ -226,24 +265,7 @@ export async function batchVisitAllIdentifiersGrouped(
     processedCount += group.identifiers.length;
     groupIndex++;
 
-    // Save progress periodically
-    if (sessionId && (groupIndex % 5 === 0 || processedCount === totalIdentifiers)) {
-      const newCodeResult = await transformFromAstAsync(ast);
-      if (!newCodeResult || !newCodeResult.code) {
-        throw new Error("Failed to stringify code");
-      }
-
-      const resumeState: ResumeState = {
-        code: newCodeResult?.code,
-        renames: Array.from(renames),
-        visited: Array.from(visited),
-        currentIndex: processedCount,
-        totalScopes: totalIdentifiers,
-        codePath: filePath || resumeCodePath || ""
-      };
-      await saveResumeState(resumeState, sessionId);
-    }
-
+    await saveProgressIfNeeded();
     onProgress?.(processedCount / totalIdentifiers);
   }
   onProgress?.(1);
@@ -722,13 +744,10 @@ function groupByScopePosition(
 }
 
 // 第二步：将过大的组切分为多个批次（流式处理，减少内存占用）
-async function* splitOversizedGroupsGenerator(
-  ast: Node,
+function* splitOversizedGroupsGenerator(
   groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
-  contextWindowSize: number,
-  maxBatchSize: number = 10,
-  minInformationScore: number = 16
-): AsyncIterableIterator<{ identifiers: NodePath<Identifier>[], scopeKey: string, surroundingCode: string }> {
+  maxBatchSize: number = 10
+): IterableIterator<{ identifiers: NodePath<Identifier>[], scopeKey: string }> {
   for (const group of groups) {
     const { identifiers, scopeKey } = group;
 
@@ -739,12 +758,9 @@ async function* splitOversizedGroupsGenerator(
         if (identifiersList.length === 0) {
           continue;
         }
-        const firstScope = identifiersList[0];
-        const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, identifiersList, minInformationScore);
         yield {
           identifiers: identifiersList,
-          scopeKey: `${scopeKey}_${i}`,
-          surroundingCode
+          scopeKey: `${scopeKey}_${i}`
         };
         identifiersList = [];
       }
@@ -754,12 +770,9 @@ async function* splitOversizedGroupsGenerator(
     if (identifiersList.length === 0) {
       continue;
     }
-    const firstScope = identifiersList[0];
-    const surroundingCode = await scopesToString(ast, firstScope, contextWindowSize, identifiersList, minInformationScore);
     yield {
       identifiers: identifiersList,
-      scopeKey: `${scopeKey}_${i}`,
-      surroundingCode
+      scopeKey: `${scopeKey}_${i}`
     };
     identifiersList = [];
   }
