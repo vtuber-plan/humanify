@@ -781,14 +781,14 @@ async function scopesToString(
   let code = result.code;
   const expandedPath = result.path;
   
-  // Program级别上下文很容易过大或过空，仅在多变量批次时收缩到最小公共上下文
-  if (expandedPath.isProgram() && identifiers.length > 1) {
+  // Program级别上下文经常包含巨大的启动字符串表，噪音远大于有效信息。
+  // 对单变量和多变量都优先使用更聚焦的 snippets，避免把程序头部塞进 prompt。
+  if (expandedPath.isProgram()) {
     const minimalContext = findMinimalCommonContext(identifiers);
     if (minimalContext && !minimalContext.isProgram()) {
       code = `${minimalContext}`;
     } else {
-      // 不再置空，至少保留围绕目标声明的邻居语句
-      code = buildContextFromSiblings(path, contextWindowSize, ast);
+      code = "";
     }
   }
 
@@ -806,7 +806,9 @@ async function scopesToString(
   }
 
   let finalCode = "";
-  if (code.length > contextWindowSize) {
+  if (!code.trim()) {
+    finalCode = snippets.length > contextWindowSize ? snippets.slice(0, contextWindowSize) : snippets;
+  } else if (code.length > contextWindowSize) {
     if (snippets.length > contextWindowSize) {
       finalCode = snippets.slice(0, contextWindowSize);
     } else {
@@ -846,6 +848,11 @@ function ensureContextHasMinimumLines(
   contextWindowSize: number,
   minlines: number
 ): string {
+  // snippets 已经是围绕目标构造的高信号上下文，不要再向 Program 级别扩展。
+  if (currentContext.includes("//========================Code Snippet for")) {
+    return currentContext.slice(0, contextWindowSize);
+  }
+
   if (countLines(currentContext) >= minlines) {
     return currentContext;
   }

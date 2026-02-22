@@ -560,6 +560,49 @@ function helperTwo() {
   );
 });
 
+test("does not prepend giant program bootstrap table for single identifier context", async () => {
+  const bootstrapEntries = Array.from({ length: 500 }, (_, i) => `"entry_${i}"`).join(", ");
+  const code = `
+let $C, $8, $R;
+$C = $8 = $R = [${bootstrapEntries}];
+const holder = {};
+holder.readWind = function (N) {
+  return N.data.wind;
+};
+  `.trim();
+
+  let capturedContext = "";
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names, scope) => {
+      if (names.includes("N")) {
+        capturedContext = scope;
+      }
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    1200,
+    undefined,
+    undefined,
+    1,
+    undefined,
+    16,
+    false,
+    1,
+    50,
+    0
+  );
+
+  assert.ok(capturedContext.includes("Rename this N"), "Expected context to contain the target snippet");
+  assert.ok(
+    !capturedContext.includes("$C = $8 = $R = ["),
+    "Expected context to avoid giant bootstrap string-table prefix"
+  );
+});
+
 test("batch resume path should never overwrite or delete the original code file", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "humanify-batch-resume-"));
   const resumeTarget = path.join(tempDir, "resume-target.js");
