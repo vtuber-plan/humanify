@@ -6,6 +6,7 @@ import { verbose } from "../../verbose.js";
 import { createClientOptions } from "../../proxy-utils.js";
 
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_JSON_RETRY_ATTEMPTS = 3;
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   let timeoutHandle: NodeJS.Timeout | undefined;
@@ -102,77 +103,210 @@ export function openaiBatchRename({
           return {};
         }
 
-        async function getBatchRenamed(promptParams: { names: string[]; surroundingCode: string; model: string; extraPrompt?: string; systemPrompt?: string }, rawResult?: string): Promise<Record<string, string>> {
-          if (rawResult) {
-            return extractBatchJsonResponse(rawResult);
+        function createIdentityRenameMap(targetNames: string[]): Record<string, string> {
+          const fallback: Record<string, string> = {};
+          for (const name of targetNames) {
+            fallback[name] = name;
           }
-
-          const requestParams: any = {
-            ...toBatchRenamePrompt(promptParams.names, promptParams.surroundingCode, promptParams.model, promptParams.extraPrompt, promptParams.systemPrompt),
-            stream: true,
-          };
-
-          const stream = await withTimeout(
-            client.chat.completions.create(requestParams),
-            STREAM_TIMEOUT_MS,
-            "Stream request timeout before first chunk after 5 minutes"
-          );
-
-          let fullContent = "";
-          const iterator = (stream as any)[Symbol.asyncIterator]();
-
-          try {
-            while (true) {
-              const nextChunk = await withTimeout(
-                iterator.next(),
-                STREAM_TIMEOUT_MS,
-                "Stream timeout waiting for chunk after 5 minutes"
-              );
-
-              if (nextChunk.done) {
-                break;
-              }
-
-              const chunk = nextChunk.value;
-              const content = chunk.choices[0]?.delta?.content || "";
-              if (content) {
-                fullContent += content;
-              }
-            }
-
-            verbose.log("Stream result:", fullContent);
-            return extractBatchJsonResponse(fullContent);
-          } catch (error) {
-            await iterator.return?.();
-            verbose.log("Stream error:", error);
-            throw error;
-          }
+          return fallback;
         }
 
-        function extractBatchJsonResponse(result: string): Record<string, string> {
-          let jsonStr = result.trim();
+        function normalizeRenameMap(parsed: unknown, targetNames: string[]): Record<string, string> | null {
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return null;
+          }
 
-          if (jsonStr.includes('```')) {
-            // 提取```json ...```或``` ...```中的内容，只取代码块内的内容
-            const match = jsonStr.match(/```[a-z]*\s*([\s\S]*?)\s*```/i);
-            if (match && match[1]) {
-              jsonStr = match[1].trim();
-              verbose.log("Extracted JSON string:", jsonStr);
+          const source = parsed as Record<string, unknown>;
+          const map: Record<string, string> = {};
+
+          for (const name of targetNames) {
+            const value = source[name];
+            map[name] = typeof value === "string" && value.trim().length > 0 ? value.trim() : name;
+          }
+
+          return map;
+        }
+
+        function extractBalancedJsonObject(text: string): string | null {
+          const start = text.indexOf("{");
+          if (start < 0) {
+            return null;
+          }
+
+          let depth = 0;
+          let inString = false;
+          let escaping = false;
+
+          for (let i = start; i < text.length; i++) {
+            const ch = text[i];
+            if (inString) {
+              if (escaping) {
+                escaping = false;
+              } else if (ch === "\\") {
+                escaping = true;
+              } else if (ch === "\"") {
+                inString = false;
+              }
+              continue;
+            }
+
+            if (ch === "\"") {
+              inString = true;
+              continue;
+            }
+
+            if (ch === "{") {
+              depth++;
+            } else if (ch === "}") {
+              depth--;
+              if (depth === 0) {
+                return text.slice(start, i + 1);
+              }
             }
           }
 
-          try {
-            const parsed = JSON.parse(jsonStr);
-            // 确保返回的是对象格式 {originalName: newName}
-            if (typeof parsed === 'object' && parsed !== null) {
-              return parsed;
-            } else {
-              throw new Error("Response is not a valid object");
+          return null;
+        }
+
+        function parseLooseKeyValueMap(text: string, targetNames: string[]): Record<string, string> | null {
+          const kvRegex = /["']?([A-Za-z_$][\w$]*)["']?\s*:\s*["']([^"'\r\n]+)["']/g;
+          const found = new Map<string, string>();
+          let match: RegExpExecArray | null;
+
+          while ((match = kvRegex.exec(text)) !== null) {
+            const key = match[1];
+            const value = match[2];
+
+            if (targetNames.includes(key) && value.trim().length > 0) {
+              found.set(key, value.trim());
             }
-          } catch (error) {
-            verbose.log("Failed to parse response:", jsonStr);
-            throw error;
           }
+
+          if (found.size === 0) {
+            return null;
+          }
+
+          const map: Record<string, string> = {};
+          for (const name of targetNames) {
+            map[name] = found.get(name) ?? name;
+          }
+
+          return map;
+        }
+
+        function extractBatchJsonResponse(result: string, targetNames: string[]): Record<string, string> {
+          const raw = result.trim();
+          const candidates: string[] = [];
+
+          if (raw.length > 0) {
+            candidates.push(raw);
+          }
+
+          const fencedRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+          for (const match of raw.matchAll(fencedRegex)) {
+            const inner = match[1]?.trim();
+            if (inner) {
+              candidates.push(inner);
+            }
+          }
+
+          const balanced = extractBalancedJsonObject(raw);
+          if (balanced) {
+            candidates.push(balanced);
+          }
+
+          for (const candidate of candidates) {
+            try {
+              const parsed = JSON.parse(candidate);
+              const normalized = normalizeRenameMap(parsed, targetNames);
+              if (normalized) {
+                verbose.log("Extracted JSON string:", candidate);
+                return normalized;
+              }
+            } catch {
+              // try next candidate
+            }
+          }
+
+          const loose = parseLooseKeyValueMap(raw, targetNames);
+          if (loose) {
+            verbose.log("Recovered rename map using loose key-value parser.");
+            return loose;
+          }
+
+          verbose.log("Failed to parse response:", raw);
+          throw new Error("Failed to parse JSON response");
+        }
+
+        async function getBatchRenamed(promptParams: { names: string[]; surroundingCode: string; model: string; extraPrompt?: string; systemPrompt?: string }): Promise<Record<string, string>> {
+          const baseRequestParams = toBatchRenamePrompt(
+            promptParams.names,
+            promptParams.surroundingCode,
+            promptParams.model,
+            promptParams.extraPrompt,
+            promptParams.systemPrompt
+          );
+
+          let lastError: unknown;
+          for (let attempt = 0; attempt < MAX_JSON_RETRY_ATTEMPTS; attempt++) {
+            const streamMode = attempt < MAX_JSON_RETRY_ATTEMPTS - 1;
+            try {
+              if (streamMode) {
+                const stream = await withTimeout(
+                  client.chat.completions.create({
+                    ...baseRequestParams,
+                    stream: true
+                  } as any),
+                  STREAM_TIMEOUT_MS,
+                  "Stream request timeout before first chunk after 5 minutes"
+                );
+
+                let fullContent = "";
+                const iterator = (stream as any)[Symbol.asyncIterator]();
+                try {
+                  while (true) {
+                    const nextChunk = await withTimeout(
+                      iterator.next(),
+                      STREAM_TIMEOUT_MS,
+                      "Stream timeout waiting for chunk after 5 minutes"
+                    );
+
+                    if (nextChunk.done) {
+                      break;
+                    }
+
+                    const chunk = nextChunk.value;
+                    const content = chunk.choices[0]?.delta?.content || "";
+                    if (content) {
+                      fullContent += content;
+                    }
+                  }
+                } finally {
+                  await iterator.return?.();
+                }
+
+                verbose.log("Stream result:", fullContent);
+                return extractBatchJsonResponse(fullContent, promptParams.names);
+              }
+
+              const completion = await withTimeout(
+                client.chat.completions.create({
+                  ...baseRequestParams,
+                  stream: false
+                } as any),
+                STREAM_TIMEOUT_MS,
+                "Non-stream request timeout after 5 minutes"
+              );
+              const content = completion.choices?.[0]?.message?.content ?? "";
+              verbose.log("Non-stream result:", content);
+              return extractBatchJsonResponse(content, promptParams.names);
+            } catch (error) {
+              lastError = error;
+              verbose.log(`Batch rename parse attempt ${attempt + 1} failed:`, error);
+            }
+          }
+
+          throw lastError instanceof Error ? lastError : new Error("Batch rename failed");
         }
 
         let renameMap: Record<string, string>;
@@ -186,8 +320,8 @@ export function openaiBatchRename({
           try {
             renameMap = await getBatchRenamed({ names, surroundingCode, model, extraPrompt: formatPrompt, systemPrompt });
           } catch (error2) {
-            verbose.log("Failed again to parse response after retry.");
-            throw new Error("Failed to parse response after retry", { cause: error2 });
+            verbose.log("Failed again to parse response after retry. Falling back to identity map.");
+            renameMap = createIdentityRenameMap(names);
           }
         }
 
@@ -221,6 +355,12 @@ function toBatchRenamePrompt(
   extraPrompt?: string,
   systemPrompt?: string
 ): OpenAI.Chat.Completions.ChatCompletionCreateParams {
+  const exampleEntries = names
+    .slice(0, 2)
+    .map((name, index) => `          "${name}": "newName${index + 1}"`)
+    .join(",\n");
+  const exampleTail = names.length > 2 ? `,\n          ...` : "";
+
   let userContent = `Rename the following Javascript variables/functions: \`${names.join(", ")}\` to have descriptive names based on their usage in the code.
         Here is the surrounding code:
         \`\`\`javascript
@@ -234,13 +374,12 @@ function toBatchRenamePrompt(
         The response should be a valid JSON string with the format:
         \`\`\`json
         {
-          "${names[0]}": "newName1",
-          "${names[1]}": "newName2",
-          ...
+${exampleEntries}${exampleTail}
         }
         \`\`\`
         
         Make sure to rename all the variables/functions in the list and return a complete mapping.
+        Return ONLY a JSON object. Do not add markdown fences or any extra text.
         `;
   if (extraPrompt) {
     userContent += `\n${extraPrompt}`;
