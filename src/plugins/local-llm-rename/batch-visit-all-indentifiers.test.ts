@@ -144,18 +144,18 @@ function anotherTest() {
     200
   );
 
-  // 同名变量跨作用域只处理一次，避免重复发给LLM
+  // 同名变量在不同作用域应分别处理，避免语义串扰
   const x1Count = processedNames.filter(name => name === 'X1').length;
-  assert.strictEqual(x1Count, 1, "X1 should only appear once in the batch");
+  assert.strictEqual(x1Count, 2, "X1 should be processed separately in each scope");
   
   // 验证所有变量都被处理了
   assert.ok(processedNames.includes('X1'), "X1 should be processed");
   assert.ok(processedNames.includes('G0'), "G0 should be processed");
   assert.ok(processedNames.includes('J'), "J should be processed");
   
-  // 验证全局没有重复的变量名
+  // 跨作用域允许同名变量重复发送（例如 X1）
   const uniqueNames = [...new Set(processedNames)];
-  assert.strictEqual(uniqueNames.length, processedNames.length, "No duplicate names should be sent to LLM");
+  assert.ok(uniqueNames.length < processedNames.length, "Cross-scope duplicate names should be allowed");
 });
 
 test("handles multiple references to same variable in batch", async () => {

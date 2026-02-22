@@ -194,7 +194,7 @@ export async function batchVisitAllIdentifiersGrouped(
       continue;
     }
 
-    // 只处理全局尚未处理过的名字，避免跨作用域同名重复发给 LLM
+    // 只处理当前绑定作用域尚未处理过的名字（scope+name），避免同一绑定重复发送
     const unvisitedIdentifiers = group.identifiers.filter((identifier) => !hasVisited(identifier, visited));
     if (unvisitedIdentifiers.length === 0) {
       processedCount += group.identifiers.length;
@@ -448,15 +448,26 @@ function sortGroupsByScopeSize(groups: Array<{ identifiers: NodePath<Identifier>
 }
 
 function hasVisited(path: NodePath<Identifier>, visited: Set<string>) {
-  return visited.has(path.node.name);
+  return visited.has(getVisitedKey(path, path.node.name));
 }
 
 function markVisited(
   path: NodePath<Identifier>,
-  newName: string,
+  originalName: string,
   visited: Set<string>
 ) {
-  visited.add(newName);
+  visited.add(getVisitedKey(path, originalName));
+}
+
+function getVisitedKey(path: NodePath<Identifier>, name: string): string {
+  const binding = path.scope.getBinding(name) ?? path.scope.getBinding(path.node.name);
+  const bindingScopePath = binding?.scope?.path ?? path.scope.path;
+  const bindingScopeNode = bindingScopePath.node;
+  const scopeIdentity = bindingScopeNode.loc
+    ? `${bindingScopeNode.type}_${bindingScopeNode.loc.start.line}_${bindingScopeNode.loc.start.column}_${bindingScopeNode.loc.end.line}_${bindingScopeNode.loc.end.column}`
+    : `${bindingScopeNode.type}_${bindingScopeNode.start || 0}_${bindingScopeNode.end || 0}`;
+  const declarationStart = binding?.path?.node.start ?? path.node.start ?? 0;
+  return `${scopeIdentity}::${name}::${declarationStart}`;
 }
 
 async function scopeToString(
