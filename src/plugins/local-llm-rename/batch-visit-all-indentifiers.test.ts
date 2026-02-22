@@ -51,7 +51,7 @@ function calculateSum() {
   );
 });
 
-test("handles single identifier in scope", async () => {
+test("handles single identifier bindings even when small scopes may be auto-merged", async () => {
   const code = `
 const globalVar = 42;
 function test() {
@@ -75,10 +75,9 @@ function test() {
 
   // 验证结果
   assert.ok(batchResults.length > 0, "Should have at least one group");
-  
-  // 检查是否有单变量组
-  const singleVarGroups = batchResults.filter(group => group.names.length === 1);
-  assert.ok(singleVarGroups.length > 0, "Should have groups with single variables");
+  const allNames = batchResults.flatMap((group) => group.names);
+  assert.ok(allNames.includes("globalVar"), "globalVar should be processed");
+  assert.ok(allNames.includes("localVar"), "localVar should be processed");
 });
 
 test("applies batch renames correctly", async () => {
@@ -310,6 +309,254 @@ test("throws clear error when batch size is non-positive", async () => {
       );
     },
     /Invalid batch size: 0/
+  );
+});
+
+test("throws clear error when batch concurrency is non-positive", async () => {
+  const code = `const a = 1;`;
+
+  await assert.rejects(
+    async () => {
+      await batchVisitAllIdentifiersGrouped(
+        code,
+        async () => ({}),
+        200,
+        undefined,
+        undefined,
+        10,
+        undefined,
+        16,
+        false,
+        0
+      );
+    },
+    /Invalid batch concurrency: 0/
+  );
+});
+
+test("throws clear error when small scope merge limit is negative", async () => {
+  const code = `const a = 1;`;
+
+  await assert.rejects(
+    async () => {
+      await batchVisitAllIdentifiersGrouped(
+        code,
+        async () => ({}),
+        200,
+        undefined,
+        undefined,
+        10,
+        undefined,
+        16,
+        false,
+        1,
+        50,
+        -1
+      );
+    },
+    /Invalid small scope merge limit: -1/
+  );
+});
+
+test("supports concurrent batch visitor calls while keeping deterministic apply order", async () => {
+  const code = `
+function one(){ const a = 1; return a; }
+function two(){ const b = 2; return b; }
+function three(){ const c = 3; return c; }
+function four(){ const d = 4; return d; }
+  `.trim();
+
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  const result = await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inFlight--;
+
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = `${name}_renamed`;
+      });
+      return renameMap;
+    },
+    400,
+    undefined,
+    undefined,
+    1,
+    undefined,
+    16,
+    false,
+    3
+  );
+
+  assert.ok(maxInFlight >= 2, `Expected concurrent calls, got maxInFlight=${maxInFlight}`);
+  assert.ok(result.includes("aRenamed") || result.includes("a_renamed"), "Expected renamed output to be applied");
+});
+
+test("auto-merges tiny same-boundary batches to reduce LLM calls", async () => {
+  const code = `
+function one() {
+  { const a = 1; console.log(a); }
+  { const b = 2; console.log(b); }
+  { const c = 3; console.log(c); }
+}
+  `.trim();
+
+  let callsWithoutMerge = 0;
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names) => {
+      callsWithoutMerge++;
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    500,
+    undefined,
+    undefined,
+    10,
+    undefined,
+    16,
+    false,
+    1,
+    50,
+    0
+  );
+
+  let callsWithMerge = 0;
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names) => {
+      callsWithMerge++;
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    500
+  );
+
+  assert.ok(
+    callsWithMerge < callsWithoutMerge,
+    `Expected fewer calls after merge. before=${callsWithoutMerge}, after=${callsWithMerge}`
+  );
+});
+
+test("does not merge tiny scopes across different function boundaries", async () => {
+  const code = `
+function one() { const a = 1; return a; }
+function two() { const b = 2; return b; }
+  `.trim();
+
+  let llmCalls = 0;
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names) => {
+      llmCalls++;
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    500,
+    undefined,
+    undefined,
+    10,
+    undefined,
+    16,
+    false,
+    1,
+    50,
+    2
+  );
+
+  assert.ok(llmCalls >= 2, `Expected separate calls across function boundaries, got ${llmCalls}`);
+});
+
+test("skips empty catch params instead of sending them to LLM", async () => {
+  const code = `
+function wrapper() {
+  try {
+    runTask();
+  } catch (z) {}
+  const N = createConn();
+  return N;
+}
+  `.trim();
+
+  const seenNames: string[] = [];
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names) => {
+      seenNames.push(...names);
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    500
+  );
+
+  assert.ok(seenNames.includes("N"), "Expected regular identifier to be processed");
+  assert.ok(!seenNames.includes("z"), "Expected empty catch param to be skipped");
+});
+
+test("expands short single-identifier context upward to improve signal", async () => {
+  const code = `
+const init = () => {};
+const holder = {};
+holder.setUrl = function (N) { this._url = N; };
+const alpha = 1;
+const beta = 2;
+const gamma = alpha + beta;
+function helperOne() {
+  const t = 1;
+  return t + gamma;
+}
+function helperTwo() {
+  const q = 2;
+  return q + gamma;
+}
+  `.trim();
+
+  let capturedContext = "";
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names, scope) => {
+      if (names.includes("N")) {
+        capturedContext = scope;
+      }
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    900,
+    undefined,
+    undefined,
+    1,
+    undefined,
+    12,
+    false,
+    1,
+    50,
+    0
+  );
+
+  assert.ok(capturedContext.includes("this._url = N"), "Captured context should include target usage");
+  assert.ok(
+    capturedContext.split("\n").length >= 12,
+    `Expected expanded context to have at least 12 lines. actual=${capturedContext.split("\n").length}`
   );
 });
 

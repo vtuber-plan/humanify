@@ -30,6 +30,8 @@ export function openaiBatchRename({
   contextWindowSize,
   resume = undefined,
   batchSize = 10,
+  batchConcurrency = 1,
+  smallScopeMergeLimit = 2,
   systemPrompt = undefined,
   uniqueNames = false,
 }: {
@@ -39,6 +41,8 @@ export function openaiBatchRename({
   contextWindowSize: number;
   resume?: string;
   batchSize?: number;
+  batchConcurrency?: number;
+  smallScopeMergeLimit?: number;
   systemPrompt?: string;
   uniqueNames?: boolean;
 }) {
@@ -197,7 +201,10 @@ export function openaiBatchRename({
       batchSize,
       filePath,
       16, // minInformationScore
-      uniqueNames
+      uniqueNames,
+      batchConcurrency,
+      50, // dirtyCheckpointInterval
+      smallScopeMergeLimit
     );
   };
 }

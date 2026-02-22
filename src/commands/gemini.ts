@@ -38,6 +38,16 @@ export const azure = cli()
     "10"
   )
   .option(
+    "--batchConcurrency <batchConcurrency>",
+    "Number of concurrent LLM requests in batch mode (default: 1)",
+    "1"
+  )
+  .option(
+    "--smallScopeMergeLimit <smallScopeMergeLimit>",
+    "Auto-merge scopes with <= N identifiers into larger batches; 0 disables merge (default: 2)",
+    "2"
+  )
+  .option(
     "--systemPrompt <systemPrompt>",
     "Custom system prompt to describe the project context and purpose for better variable renaming",
     undefined
@@ -51,6 +61,8 @@ export const azure = cli()
     const apiKey = opts.apiKey ?? env("GEMINI_API_KEY");
     const contextWindowSize = parseNumber(opts.contextSize);
     const batchSize = parsePositiveNumber(opts.batchSize, "batchSize");
+    const batchConcurrency = parsePositiveNumber(opts.batchConcurrency, "batchConcurrency");
+    const smallScopeMergeLimit = parseNumber(opts.smallScopeMergeLimit);
 
     // 根据batch参数选择使用普通重命名还是批量重命名
     const renameFunction = opts.batch 
@@ -60,6 +72,8 @@ export const azure = cli()
           contextWindowSize,
           resume: opts.resume,
           batchSize,
+          batchConcurrency,
+          smallScopeMergeLimit,
           systemPrompt: opts.systemPrompt,
           uniqueNames: opts.uniqueNames
         })

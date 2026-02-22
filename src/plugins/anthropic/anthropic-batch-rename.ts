@@ -11,6 +11,8 @@ export function anthropicBatchRename({
     contextWindowSize,
     resume = undefined,
     batchSize = 10,
+    batchConcurrency = 1,
+    smallScopeMergeLimit = 2,
     systemPrompt = undefined,
     uniqueNames = false,
 }: {
@@ -20,6 +22,8 @@ export function anthropicBatchRename({
     contextWindowSize: number;
     resume?: string;
     batchSize?: number;
+    batchConcurrency?: number;
+    smallScopeMergeLimit?: number;
     systemPrompt?: string;
     uniqueNames?: boolean;
 }) {
@@ -56,7 +60,10 @@ export function anthropicBatchRename({
             batchSize,
             filePath,
             16, // minInformationScore
-            uniqueNames
+            uniqueNames,
+            batchConcurrency,
+            50, // dirtyCheckpointInterval
+            smallScopeMergeLimit
         );
     };
 }

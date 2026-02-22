@@ -83,7 +83,10 @@ export async function batchVisitAllIdentifiersGrouped(
   maxBatchSize: number = 10,
   filePath?: string,
   minInformationScore: number = 16,
-  uniqueNames = false
+  uniqueNames = false,
+  batchConcurrency: number = 1,
+  dirtyCheckpointInterval: number = 50,
+  smallScopeMergeLimit: number = 2
 ): Promise<string> {
   let ast: Node | null;
   let renames: Set<string>;
@@ -95,6 +98,19 @@ export async function batchVisitAllIdentifiersGrouped(
 
   if (maxBatchSize <= 0) {
     throw new Error(`Invalid batch size: ${maxBatchSize}. batchSize must be greater than 0.`);
+  }
+  if (batchConcurrency <= 0) {
+    throw new Error(`Invalid batch concurrency: ${batchConcurrency}. batchConcurrency must be greater than 0.`);
+  }
+  if (dirtyCheckpointInterval <= 0) {
+    throw new Error(
+      `Invalid checkpoint interval: ${dirtyCheckpointInterval}. checkpoint interval must be greater than 0.`
+    );
+  }
+  if (smallScopeMergeLimit < 0) {
+    throw new Error(
+      `Invalid small scope merge limit: ${smallScopeMergeLimit}. smallScopeMergeLimit must be >= 0.`
+    );
   }
 
   const resumeCodePath = resume?.trim();
@@ -154,23 +170,30 @@ export async function batchVisitAllIdentifiersGrouped(
   const groupedScopes = groupByScopePosition(scopes);
   verbose.log(`Grouping scopes...`);
   const sortedGroups = sortGroupsByScopeSize(groupedScopes);
+  const groupsToProcess = mergeSmallScopeGroups(
+    sortedGroups,
+    maxBatchSize,
+    smallScopeMergeLimit
+  );
+  verbose.log(`Merged small scope groups: ${sortedGroups.length} -> ${groupsToProcess.length}`);
   verbose.log(`Sorting groups...`);
 
   // 预计算总组数用于进度跟踪
   let totalIdentifiers = 0;
-  for (const group of sortedGroups) {
+  for (const group of groupsToProcess) {
     totalIdentifiers += group.identifiers.length;
   }
   verbose.log("Counting total groups...");
 
   let processedCount = 0;
   let groupIndex = 0;
-  const groupGenerator = splitOversizedGroupsGenerator(sortedGroups, maxBatchSize);
+  const groupGenerator = splitOversizedGroupsGenerator(groupsToProcess, maxBatchSize);
   verbose.log(`Processing groups...`);
+  verbose.log(`Batch concurrency: ${batchConcurrency}`);
 
   async function saveProgressIfNeeded() {
     if (!sessionId) return;
-    const checkpointInterval = astDirty ? 5 : 200;
+    const checkpointInterval = astDirty ? dirtyCheckpointInterval : 200;
     if (groupIndex % checkpointInterval !== 0 && processedCount !== totalIdentifiers) return;
 
     if (astDirty) {
@@ -193,50 +216,82 @@ export async function batchVisitAllIdentifiersGrouped(
     await saveResumeState(resumeState, sessionId);
   }
 
-  // Process groups in scope size order (smallest to largest)
-  for (const group of groupGenerator) {
-    if (processedCount < currentIndex) {
-      processedCount += group.identifiers.length;
-      groupIndex++;
-      onProgress?.(processedCount / totalIdentifiers);
-      continue;
-    }
+  type SplitGroup = { identifiers: NodePath<Identifier>[]; scopeKey: string };
+  type PreparedGroup = {
+    group: SplitGroup;
+    uniqueIdentifiers: NodePath<Identifier>[];
+    identifierNames: string[];
+    surroundingCode: string;
+  };
 
-    // 只处理当前绑定作用域尚未处理过的名字（scope+name），避免同一绑定重复发送
-    const unvisitedIdentifiers = group.identifiers.filter((identifier) => !hasVisited(identifier, visited));
-    if (unvisitedIdentifiers.length === 0) {
-      processedCount += group.identifiers.length;
-      groupIndex++;
-      onProgress?.(processedCount / totalIdentifiers);
-      await saveProgressIfNeeded();
-      continue;
-    }
-
-    const uniqueIdentifierByName = new Map<string, NodePath<Identifier>>();
-    for (const identifier of unvisitedIdentifiers) {
-      const name = identifier.node.name;
-      if (!uniqueIdentifierByName.has(name)) {
-        uniqueIdentifierByName.set(name, identifier);
+  async function nextPreparedGroup(): Promise<PreparedGroup | null> {
+    while (true) {
+      const next = groupGenerator.next();
+      if (next.done) {
+        return null;
       }
+      const group = next.value;
+
+      if (processedCount < currentIndex) {
+        processedCount += group.identifiers.length;
+        groupIndex++;
+        onProgress?.(processedCount / totalIdentifiers);
+        continue;
+      }
+
+      // 只处理当前绑定作用域尚未处理过的名字（scope+name），避免同一绑定重复发送
+      const unvisitedIdentifiers = group.identifiers.filter((identifier) => !hasVisited(identifier, visited));
+      if (unvisitedIdentifiers.length === 0) {
+        processedCount += group.identifiers.length;
+        groupIndex++;
+        onProgress?.(processedCount / totalIdentifiers);
+        await saveProgressIfNeeded();
+        continue;
+      }
+
+      // Skip identifiers that have no useful semantic signal (e.g. empty catch params).
+      const filteredIdentifiers: NodePath<Identifier>[] = [];
+      for (const identifier of unvisitedIdentifiers) {
+        if (shouldSkipIdentifierForLLM(identifier)) {
+          markVisited(identifier, identifier.node.name, visited);
+          verbose.log(`Skipped low-signal identifier: ${identifier.node.name}`);
+          continue;
+        }
+        filteredIdentifiers.push(identifier);
+      }
+      if (filteredIdentifiers.length === 0) {
+        processedCount += group.identifiers.length;
+        groupIndex++;
+        onProgress?.(processedCount / totalIdentifiers);
+        await saveProgressIfNeeded();
+        continue;
+      }
+
+      const uniqueIdentifierByName = new Map<string, NodePath<Identifier>>();
+      for (const identifier of filteredIdentifiers) {
+        const name = identifier.node.name;
+        if (!uniqueIdentifierByName.has(name)) {
+          uniqueIdentifierByName.set(name, identifier);
+        }
+      }
+      const uniqueIdentifiers = Array.from(uniqueIdentifierByName.values());
+      const identifierNames = uniqueIdentifiers.map((id) => id.node.name);
+      const contextSourcePath = uniqueIdentifiers[0] ?? group.identifiers[0];
+      const surroundingCode = await scopesToString(
+        ast,
+        contextSourcePath,
+        contextWindowSize,
+        uniqueIdentifiers,
+        minInformationScore
+      );
+
+      return { group, uniqueIdentifiers, identifierNames, surroundingCode };
     }
-    const uniqueIdentifiers = Array.from(uniqueIdentifierByName.values());
-    const identifierNames = uniqueIdentifiers.map(id => id.node.name);
-    const contextSourcePath = uniqueIdentifiers[0] ?? group.identifiers[0];
-    const surroundingCode = await scopesToString(
-      ast,
-      contextSourcePath,
-      contextWindowSize,
-      uniqueIdentifiers,
-      minInformationScore
-    );
+  }
 
-    // 批量重命名这个组中的所有identifier
-    const renameMap = await visitor(identifierNames, surroundingCode);
-
-    // 应用重命名
+  function applyRenameMap(uniqueIdentifiers: NodePath<Identifier>[], renameMap: Record<string, string>) {
     for (const identifier of uniqueIdentifiers) {
       const originalName = identifier.node.name;
-      // 不包含key originalName
       if (!renameMap.hasOwnProperty(originalName)) {
         continue;
       }
@@ -269,12 +324,39 @@ export async function batchVisitAllIdentifiersGrouped(
       }
       markVisited(identifier, originalName, visited);
     }
+  }
 
-    processedCount += group.identifiers.length;
-    groupIndex++;
+  // Process groups in scope size order (smallest to largest).
+  // Context extraction stays sequential, but LLM requests run concurrently.
+  while (true) {
+    const pending: PreparedGroup[] = [];
+    while (pending.length < batchConcurrency) {
+      const prepared = await nextPreparedGroup();
+      if (!prepared) {
+        break;
+      }
+      pending.push(prepared);
+    }
 
-    await saveProgressIfNeeded();
-    onProgress?.(processedCount / totalIdentifiers);
+    if (pending.length === 0) {
+      break;
+    }
+
+    const renameMaps = await Promise.all(
+      pending.map((item) => visitor(item.identifierNames, item.surroundingCode))
+    );
+
+    for (let i = 0; i < pending.length; i++) {
+      const item = pending[i];
+      const renameMap = renameMaps[i];
+      applyRenameMap(item.uniqueIdentifiers, renameMap);
+
+      processedCount += item.group.identifiers.length;
+      groupIndex++;
+
+      await saveProgressIfNeeded();
+      onProgress?.(processedCount / totalIdentifiers);
+    }
   }
   onProgress?.(1);
 
@@ -699,53 +781,127 @@ async function scopesToString(
   let code = result.code;
   const expandedPath = result.path;
   
-  // 如果扩展的路径是全程序级别，则找到包含所有identifiers的最小context
-  if (expandedPath.isProgram() && identifiers.length > 0) {
+  // Program级别上下文很容易过大或过空，仅在多变量批次时收缩到最小公共上下文
+  if (expandedPath.isProgram() && identifiers.length > 1) {
     const minimalContext = findMinimalCommonContext(identifiers);
     if (minimalContext && !minimalContext.isProgram()) {
-      // 使用最小公共上下文的代码
       code = `${minimalContext}`;
     } else {
-      // 如果最小公共上下文仍然是程序级别，则设置为空
-      code = "";
+      // 不再置空，至少保留围绕目标声明的邻居语句
+      code = buildContextFromSiblings(path, contextWindowSize, ast);
     }
   }
-  
+
+  let snippets = "";
+  const perIdentifierWindow = Math.max(
+    120,
+    Math.floor(contextWindowSize / Math.max(1, identifiers.length))
+  );
+  for (const identifier of identifiers) {
+    identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
+    snippets += `\n//========================Code Snippet for ${identifier.node.name}========================\n`;
+    snippets += await scopeToString(ast, identifier, perIdentifierWindow);
+    snippets += `\n...\n`;
+    identifier.node.trailingComments = [];
+  }
+
+  let finalCode = "";
   if (code.length > contextWindowSize) {
-    var finalCode = "";
-    for (const identifier of identifiers) {
-      identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
-      finalCode += `\n//========================Code Snippet for ${identifier.node.name}========================\n`;
-      finalCode += await scopeToString(ast, identifier, Math.floor(contextWindowSize / identifiers.length));
-      finalCode += `\n...\n`;
-      identifier.node.trailingComments = [];
-    }
-
-    if (finalCode.length > contextWindowSize) {
-      finalCode = finalCode.slice(0, contextWindowSize);
+    if (snippets.length > contextWindowSize) {
+      finalCode = snippets.slice(0, contextWindowSize);
     } else {
-      finalCode = code.slice(0, contextWindowSize - finalCode.length) + finalCode;
+      finalCode = code.slice(0, contextWindowSize - snippets.length) + snippets;
     }
-
-    return finalCode;
   } else {
-    var finalCode = "";
-    for (const identifier of identifiers) {
-      identifier.addComment("trailing", `Rename this ${identifier.node.name}`, false);
-      finalCode += `\n//========================Code Snippet for ${identifier.node.name}========================\n`;
-      finalCode += await scopeToString(ast, identifier, Math.floor(contextWindowSize / identifiers.length));
-      finalCode += `\n...\n`;
-      identifier.node.trailingComments = [];
-    }
-
-    if (finalCode.length > contextWindowSize) {
-      finalCode = finalCode.slice(0, contextWindowSize);
+    if (snippets.length > contextWindowSize) {
+      finalCode = snippets.slice(0, contextWindowSize);
     } else {
-      finalCode = code.slice(0, contextWindowSize - finalCode.length) + `\n...\n` + finalCode;
+      finalCode = code.slice(0, contextWindowSize - snippets.length) + `\n...\n` + snippets;
     }
-
-    return finalCode;
   }
+
+  if (identifiers.length === 1) {
+    return ensureContextHasMinimumLines(
+      finalCode,
+      ast,
+      identifiers[0],
+      contextWindowSize,
+      minlines
+    );
+  }
+  return finalCode;
+}
+
+function countLines(code: string): number {
+  if (code.trim().length === 0) {
+    return 0;
+  }
+  return code.split("\n").length;
+}
+
+function ensureContextHasMinimumLines(
+  currentContext: string,
+  ast: Node,
+  targetIdentifier: NodePath<Identifier>,
+  contextWindowSize: number,
+  minlines: number
+): string {
+  if (countLines(currentContext) >= minlines) {
+    return currentContext;
+  }
+
+  const expanded = expandContextByParentLines(
+    targetIdentifier,
+    ast,
+    contextWindowSize,
+    minlines
+  );
+  if (countLines(expanded) <= countLines(currentContext)) {
+    return currentContext;
+  }
+
+  const focusHint = `\n// Focus identifier: ${targetIdentifier.node.name}\n`;
+  if (expanded.length + focusHint.length <= contextWindowSize) {
+    return expanded + focusHint;
+  }
+  return expanded.slice(0, contextWindowSize);
+}
+
+function expandContextByParentLines(
+  targetIdentifier: NodePath<Identifier>,
+  ast: Node,
+  contextWindowSize: number,
+  minlines: number
+): string {
+  let currentPath: NodePath | null = closestSurroundingContextPath(targetIdentifier);
+  let bestContext = currentPath ? `${currentPath}`.slice(0, contextWindowSize) : "";
+  let bestLines = countLines(bestContext);
+
+  while (currentPath) {
+    const candidate = `${currentPath}`;
+    const candidateLines = countLines(candidate);
+    if (candidateLines > bestLines) {
+      bestContext = candidate.slice(0, contextWindowSize);
+      bestLines = candidateLines;
+    }
+    if (candidateLines >= minlines) {
+      return candidate.slice(0, contextWindowSize);
+    }
+    if (currentPath.isProgram()) {
+      break;
+    }
+    currentPath = currentPath.parentPath;
+  }
+
+  const siblingContext = buildContextFromSiblings(
+    targetIdentifier,
+    contextWindowSize,
+    ast
+  );
+  if (countLines(siblingContext) > bestLines) {
+    return siblingContext.slice(0, contextWindowSize);
+  }
+  return bestContext.slice(0, contextWindowSize);
 }
 
 // 第一步：按作用域位置分组identifier
@@ -767,6 +923,96 @@ function groupByScopePosition(
     identifiers,
     scopeKey
   }));
+}
+
+function mergeSmallScopeGroups(
+  groups: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }>,
+  maxBatchSize: number,
+  smallScopeMergeLimit: number
+): Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }> {
+  if (smallScopeMergeLimit <= 0) {
+    return groups;
+  }
+
+  const merged: Array<{ identifiers: NodePath<Identifier>[], scopeKey: string }> = [];
+  let pendingIdentifiers: NodePath<Identifier>[] = [];
+  let pendingScopeKeys: string[] = [];
+  let pendingNames = new Set<string>();
+  let pendingBoundaryKey = "";
+  let pendingLastStart = 0;
+
+  const flushPending = () => {
+    if (pendingIdentifiers.length === 0) {
+      return;
+    }
+    merged.push({
+      identifiers: pendingIdentifiers,
+      scopeKey: pendingScopeKeys.join("__merged__")
+    });
+    pendingIdentifiers = [];
+    pendingScopeKeys = [];
+    pendingNames = new Set<string>();
+    pendingBoundaryKey = "";
+    pendingLastStart = 0;
+  };
+
+  for (const group of groups) {
+    const isMergeable = group.identifiers.length <= smallScopeMergeLimit;
+    if (!isMergeable) {
+      flushPending();
+      merged.push(group);
+      continue;
+    }
+    if (group.identifiers.some((identifier) => shouldSkipIdentifierForLLM(identifier))) {
+      flushPending();
+      merged.push(group);
+      continue;
+    }
+
+    const groupBoundaryKey = getMergeBoundaryKey(group.identifiers[0]);
+    const groupStart = group.identifiers[0].node.start ?? 0;
+    const groupNames = new Set(group.identifiers.map((identifier) => identifier.node.name));
+    const hasNameConflict = Array.from(groupNames).some((name) => pendingNames.has(name));
+    const wouldExceedBatchSize =
+      pendingIdentifiers.length > 0 &&
+      pendingIdentifiers.length + group.identifiers.length > maxBatchSize;
+    const boundaryMismatch =
+      pendingIdentifiers.length > 0 &&
+      groupBoundaryKey !== pendingBoundaryKey;
+    const tooFarFromPrevious =
+      pendingIdentifiers.length > 0 &&
+      Math.abs(groupStart - pendingLastStart) > 5000;
+    if (hasNameConflict || wouldExceedBatchSize || boundaryMismatch || tooFarFromPrevious) {
+      flushPending();
+    }
+
+    pendingIdentifiers = pendingIdentifiers.concat(group.identifiers);
+    pendingScopeKeys.push(group.scopeKey);
+    for (const name of groupNames) {
+      pendingNames.add(name);
+    }
+    pendingBoundaryKey = groupBoundaryKey;
+    pendingLastStart = groupStart;
+  }
+  flushPending();
+  return merged;
+}
+
+function shouldSkipIdentifierForLLM(path: NodePath<Identifier>): boolean {
+  if (path.parentPath?.isCatchClause() && path.key === "param") {
+    const catchClause = path.parentPath.node;
+    if (catchClause.body?.body?.length === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getMergeBoundaryKey(path: NodePath<Identifier>): string {
+  const boundaryPath = path.findParent(
+    (p) => p.isProgram() || p.isFunction() || p.isClassDeclaration() || p.isClassExpression()
+  ) as NodePath<Node> | null;
+  return getNodePathIdentityKey((boundaryPath ?? path.scope.path) as NodePath<Node>);
 }
 
 // 第二步：将过大的组切分为多个批次（流式处理，减少内存占用）
