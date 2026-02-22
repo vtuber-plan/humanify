@@ -28,7 +28,7 @@ export function geminiBatchRename({
   // We'll create it without proxy support for now
   const client = new GoogleGenerativeAI(apiKey);
 
-  return async (code: string): Promise<string> => {
+  return async (code: string, filePath?: string): Promise<string> => {
     const startTime = Date.now();
     return await batchVisitAllIdentifiersGrouped(
       code,
@@ -50,7 +50,10 @@ export function geminiBatchRename({
       contextWindowSize,
       (percentage) => showPercentage(percentage, startTime),
       resume,
-      batchSize
+      batchSize,
+      filePath,
+      16, // minInformationScore
+      uniqueNames
     );
   };
 }

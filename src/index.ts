@@ -16,4 +16,8 @@ cli()
   .addCommand(anthropic)
   .addCommand(azure)
   .addCommand(download())
-  .parse(process.argv);
+  .parseAsync(process.argv)
+  .catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

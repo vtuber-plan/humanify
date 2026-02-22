@@ -12,11 +12,11 @@ export function download() {
       .command(model)
       .description(`Download the ${model} model`)
       .option("-v, --verbose", "Show verbose output")
-      .action((opts) => {
+      .action(async (opts) => {
         if (opts.verbose) {
           verbose.enabled = true;
         }
-        downloadModel(model);
+        await downloadModel(model);
       });
   }
 

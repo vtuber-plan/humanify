@@ -23,13 +23,13 @@ export function anthropicBatchRename({
     systemPrompt?: string;
     uniqueNames?: boolean;
 }) {
-    const clientOptions = createClientOptions(baseURL || 'https://api.anthropic.com', {
+    const clientOptions = createClientOptions(baseURL || "https://api.anthropic.com", {
         apiKey,
         baseURL
     });
     const client = new Anthropic(clientOptions);
 
-    return async (code: string): Promise<string> => {
+    return async (code: string, filePath?: string): Promise<string> => {
         const startTime = Date.now();
         return await batchVisitAllIdentifiersGrouped(
             code,
@@ -43,7 +43,7 @@ export function anthropicBatchRename({
 
                 const result = response.content[0];
                 if (!result) {
-                    throw new Error('Failed to rename', { cause: response });
+                    throw new Error("Failed to rename", { cause: response });
                 }
                 
                 const renameMap = (result as any).input;
@@ -54,7 +54,7 @@ export function anthropicBatchRename({
             (percentage) => showPercentage(percentage, startTime),
             resume,
             batchSize,
-            undefined, // filePath
+            filePath,
             16, // minInformationScore
             uniqueNames
         );
@@ -78,23 +78,17 @@ function toBatchRenamePrompt(
 
     const defaultSystemPrompt = `You are a helpful assistant that renames Javascript variables and functions to have more descriptive names based on their usage in the code.`;
     const finalSystemPrompt = systemPrompt ? `${systemPrompt}\n\n${defaultSystemPrompt}` : defaultSystemPrompt;
-    
-    const messages = [];
-    if (systemPrompt) {
-        messages.push({
-            role: "user" as const,
-            content: finalSystemPrompt
-        });
-    }
-    messages.push({
-        role: "user" as const,
-        content: `Analyze this code and suggest descriptive names for the variables/functions: \`${names.join(", ")}\`:
-        ${surroundingCode}`
-    });
-    
+
     return {
         model,
-        messages,
+        system: finalSystemPrompt,
+        messages: [
+            {
+                role: "user",
+                content: `Analyze this code and suggest descriptive names for the variables/functions: \`${names.join(", ")}\`:
+        ${surroundingCode}`
+            }
+        ],
         max_tokens: contextWindowSize,
         tools: [
             {

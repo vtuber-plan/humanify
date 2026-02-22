@@ -6,7 +6,6 @@ import {
   ModelParams,
   SchemaType
 } from "@google/generative-ai";
-import { createClientOptions } from "../../proxy-utils.js";
 
 export function geminiRename({
   apiKey,
@@ -27,7 +26,7 @@ export function geminiRename({
   // We'll create it without proxy support for now
   const client = new GoogleGenerativeAI(apiKey);
 
-  return async (code: string): Promise<string> => {
+  return async (code: string, filePath?: string): Promise<string> => {
     const startTime = Date.now();
     return await visitAllIdentifiers(
       code,
@@ -50,7 +49,7 @@ export function geminiRename({
       contextWindowSize,
       (percentage) => showPercentage(percentage, startTime),
       resume,
-      undefined, // filePath
+      filePath,
       uniqueNames
     );
   };

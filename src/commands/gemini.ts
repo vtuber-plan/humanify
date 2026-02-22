@@ -80,7 +80,7 @@ export const azure = cli()
 
     await unminify(filename, opts.outputDir, [
       (code: string, filePath?: string) => babel(code, opts.sourcemap, filePath),
-      (code: string) => renameFunction(code),
+      (code: string, filePath?: string) => renameFunction(code, filePath),
       (code: string) => prettier(code)
     ], {
       generateSourceMap: opts.sourcemap
