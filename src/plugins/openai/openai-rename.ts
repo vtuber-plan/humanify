@@ -2,9 +2,27 @@ import OpenAI from "openai";
 import { visitAllIdentifiers } from "../local-llm-rename/visit-all-identifiers.js";
 import { showPercentage } from "../../progress.js";
 import { verbose } from "../../verbose.js";
-import { sleep } from "openai/core.mjs";
 
 import { createClientOptions } from "../../proxy-utils.js";
+
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
 
 export function openaiRename({
   apiKey,
@@ -26,6 +44,7 @@ export function openaiRename({
   const clientOptions = createClientOptions(baseURL, {
     apiKey,
     baseURL,
+    timeout: STREAM_TIMEOUT_MS
   });
   const client = new OpenAI(clientOptions);
 
@@ -48,18 +67,28 @@ export function openaiRename({
             stream: true,
           };
 
-          const stream = await client.chat.completions.create(requestParams);
+          const stream = await withTimeout(
+            client.chat.completions.create(requestParams),
+            STREAM_TIMEOUT_MS,
+            "Stream request timeout before first chunk after 5 minutes"
+          );
 
           let fullContent = "";
-          const timeoutMs = 5 * 60 * 1000; // 5分钟超时
-          const startTime = Date.now();
+          const iterator = (stream as any)[Symbol.asyncIterator]();
 
           try {
-            for await (const chunk of stream) {
-              if (Date.now() - startTime > timeoutMs) {
-                throw new Error("Stream timeout after 30 seconds");
+            while (true) {
+              const nextChunk = await withTimeout(
+                iterator.next(),
+                STREAM_TIMEOUT_MS,
+                "Stream timeout waiting for chunk after 5 minutes"
+              );
+
+              if (nextChunk.done) {
+                break;
               }
 
+              const chunk = nextChunk.value;
               const content = chunk.choices[0]?.delta?.content || "";
               if (content) {
                 fullContent += content;
@@ -70,6 +99,7 @@ export function openaiRename({
             verbose.log("Stream result:", fullContent);
             return extractJsonResponse(fullContent);
           } catch (error) {
+            await iterator.return?.();
             verbose.log("Stream error:", error);
             throw error;
           }

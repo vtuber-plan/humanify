@@ -7,7 +7,8 @@ import {
   saveResumeState,
   loadResumeState,
   deleteResumeState,
-  resolveResumeStatePath
+  resolveResumeStatePath,
+  resolveResumeSessionPath
 } from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
 
@@ -97,11 +98,18 @@ export async function batchVisitAllIdentifiersGrouped(
   }
 
   const resumeCodePath = resume?.trim();
-  const sessionId = resumeCodePath ? resolveResumeStatePath(resumeCodePath) : undefined;
+  const sessionId = resumeCodePath ? resolveResumeSessionPath(resumeCodePath, filePath) : undefined;
+  const legacySessionId = resumeCodePath ? resolveResumeStatePath(resumeCodePath) : undefined;
 
   // Resume from safe sidecar state; keep one-time legacy fallback for old state path layout.
   if (sessionId) {
     let resumeState = await loadResumeState(sessionId);
+    if (!resumeState && legacySessionId && legacySessionId !== sessionId) {
+      resumeState = await loadResumeState(legacySessionId);
+      if (resumeState) {
+        verbose.log(`Loaded legacy resume state from ${legacySessionId}`);
+      }
+    }
     if (!resumeState && resumeCodePath) {
       resumeState = await loadResumeState(resumeCodePath);
       if (resumeState) {
@@ -285,9 +293,16 @@ export async function batchVisitAllIdentifiersGrouped(
 // 分离作用域查找和排序逻辑
 function findScopes(ast: Node): NodePath<Identifier>[] {
   const scopes: NodePath<Identifier>[] = [];
+  const seenBindings = new Set<string>();
   traverse(ast, {
     BindingIdentifier(path) {
-      scopes.push(path);
+      const declarationPath = getDeclarationIdentifierPath(path);
+      const declarationKey = getNodePathIdentityKey(declarationPath);
+      if (seenBindings.has(declarationKey)) {
+        return;
+      }
+      seenBindings.add(declarationKey);
+      scopes.push(declarationPath);
     }
   });
 
@@ -303,7 +318,7 @@ function findScopes(ast: Node): NodePath<Identifier>[] {
 
 // 获取作用域范围大小用于排序
 function getScopeSize(scope: NodePath<Identifier>): number {
-  const bindingBlock = closestSurroundingContextPath(scope).scope.block;
+  const bindingBlock = getGroupingScopePath(scope).scope.block;
   return bindingBlock.end! - bindingBlock.start!;
 }
 
@@ -765,7 +780,7 @@ function* splitOversizedGroupsGenerator(
     let identifiersList: NodePath<Identifier>[] = [];
     for (var i = 0; i < identifiers.length; i++) {
       const identifier = identifiers[i];
-      if (identifiersList.length >= maxBatchSize || identifiersList.map(id => id.node.name).indexOf(identifier.node.name) != -1) {
+      if (identifiersList.length >= maxBatchSize) {
         if (identifiersList.length === 0) {
           continue;
         }
@@ -845,7 +860,7 @@ async function groupIdentifiersByScope(
 
 // 获取作用域的位置key，避免存储完整代码
 function getScopePositionKey(scope: NodePath<Identifier>): string {
-  const contextPath = closestSurroundingContextPath(scope);
+  const contextPath = getGroupingScopePath(scope);
   const node = contextPath.node;
 
   if (node.loc) {
@@ -854,6 +869,35 @@ function getScopePositionKey(scope: NodePath<Identifier>): string {
 
   // 如果没有位置信息，使用节点类型和哈希
   return `${node.type}_${node.start || 0}`;
+}
+
+function getGroupingScopePath(path: NodePath<Identifier>): NodePath<Node> {
+  const declarationPath = getDeclarationIdentifierPath(path);
+  if (
+    declarationPath.key === "id" &&
+    (declarationPath.parentPath?.isFunctionDeclaration() ||
+      declarationPath.parentPath?.isClassDeclaration())
+  ) {
+    return declarationPath.parentPath as NodePath<Node>;
+  }
+
+  const binding = declarationPath.scope.getBinding(declarationPath.node.name);
+  return (binding?.scope?.path as NodePath<Node>) ?? (declarationPath.scope.path as NodePath<Node>);
+}
+
+function getDeclarationIdentifierPath(path: NodePath<Identifier>): NodePath<Identifier> {
+  const binding = path.scope.getBinding(path.node.name);
+  if (binding?.path?.isIdentifier()) {
+    return binding.path as NodePath<Identifier>;
+  }
+  return path;
+}
+
+function getNodePathIdentityKey(path: NodePath<Node>): string {
+  if (path.node.loc) {
+    return `${path.node.type}_${path.node.loc.start.line}_${path.node.loc.start.column}_${path.node.loc.end.line}_${path.node.loc.end.column}`;
+  }
+  return `${path.node.type}_${path.node.start || 0}_${path.node.end || 0}`;
 }
 
 function closestSurroundingContextPath(

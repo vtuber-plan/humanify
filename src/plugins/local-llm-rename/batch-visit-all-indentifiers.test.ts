@@ -203,6 +203,98 @@ function test() {
   assert.strictEqual(uniqueNames.length, processedNames.length, "No duplicate names should be sent to LLM");
 }); 
 
+test("keeps function params and local vars in one batch despite repeated assignments", async () => {
+  const code = `
+const handler = function (N = 1) {
+  if (this[$5[1537]]) {
+    var M;
+    var g = this[$R[1657]];
+    var C = this[$5[1539]];
+    var z = 0;
+    var R = g[$c[5]];
+    var s = 0;
+    var e = this[$R[1658]];
+    for (z = R - 1; z > -1; z--) {
+      M = g[z];
+      s = e[M.id];
+      if (s >= M[$c[1515]]) {
+        s = 0;
+        g[$R[64]](z, 1);
+        C.push(M);
+      } else {
+        s += 1;
+      }
+      e[M.id] = s;
+    }
+  }
+};
+  `.trim();
+
+  const targetNames = ["N", "M", "g", "C", "z", "R", "s", "e"];
+  const batchResults: string[][] = [];
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names) => {
+      batchResults.push(names);
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    2000,
+    undefined,
+    undefined,
+    20
+  );
+
+  const targetBatch = batchResults.find((names) =>
+    targetNames.every((name) => names.includes(name))
+  );
+  assert.ok(targetBatch, "Expected a single batch containing N/M/g/C/z/R/s/e");
+
+  const processedNames = batchResults.flat();
+  for (const name of targetNames) {
+    const count = processedNames.filter((n) => n === name).length;
+    assert.strictEqual(count, 1, `${name} should be processed exactly once`);
+  }
+});
+
+test("splits by maxBatchSize only after declaration-level dedup", async () => {
+  const code = `
+const fn = function (a, b, c, d) {
+  a++;
+  b++;
+  c++;
+  d++;
+};
+  `.trim();
+
+  const batchResults: string[][] = [];
+  await batchVisitAllIdentifiersGrouped(
+    code,
+    async (names) => {
+      batchResults.push(names);
+      const renameMap: Record<string, string> = {};
+      names.forEach((name) => {
+        renameMap[name] = name;
+      });
+      return renameMap;
+    },
+    500,
+    undefined,
+    undefined,
+    2
+  );
+
+  const argNames = ["a", "b", "c", "d"];
+  const argBatches = batchResults.filter((names) => names.some((name) => argNames.includes(name)));
+  assert.strictEqual(argBatches.length, 2, "Expected parameter group to split into exactly 2 batches");
+
+  const processedArgNames = argBatches.flat().sort();
+  assert.deepStrictEqual(processedArgNames, argNames.sort());
+});
+
 test("throws clear error when batch size is non-positive", async () => {
   const code = `const a = 1;`;
 

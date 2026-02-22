@@ -6,7 +6,8 @@ import {
   saveResumeState,
   loadResumeState,
   deleteResumeState,
-  resolveResumeStatePath
+  resolveResumeStatePath,
+  resolveResumeSessionPath
 } from "../../resume-utils.js";
 import { verbose } from "../../verbose.js";
 
@@ -65,11 +66,18 @@ export async function visitAllIdentifiers(
   let currentIndex = 0;
 
   const resumeCodePath = resume?.trim();
-  const sessionId = resumeCodePath ? resolveResumeStatePath(resumeCodePath) : undefined;
+  const sessionId = resumeCodePath ? resolveResumeSessionPath(resumeCodePath, filePath) : undefined;
+  const legacySessionId = resumeCodePath ? resolveResumeStatePath(resumeCodePath) : undefined;
   
   // Resume from safe sidecar state; keep one-time legacy fallback for old state path layout.
   if (sessionId) {
     let resumeState = await loadResumeState(sessionId);
+    if (!resumeState && legacySessionId && legacySessionId !== sessionId) {
+      resumeState = await loadResumeState(legacySessionId);
+      if (resumeState) {
+        verbose.log(`Loaded legacy resume state from ${legacySessionId}`);
+      }
+    }
     if (!resumeState && resumeCodePath) {
       resumeState = await loadResumeState(resumeCodePath);
       if (resumeState) {
@@ -120,13 +128,14 @@ export async function visitAllIdentifiers(
     if (smallestScopeNode.type !== "Identifier") {
       throw new Error("No identifiers found");
     }
+    const originalName = smallestScopeNode.name;
 
     const surroundingCode = await scopeToString(
       smallestScope,
       contextWindowSize
     );
-    const renamed = await visitor(smallestScopeNode.name, surroundingCode);
-    if (renamed !== smallestScopeNode.name) {
+    const renamed = await visitor(originalName, surroundingCode);
+    if (renamed !== originalName) {
       let safeRenamed = toIdentifier(renamed);
       while (
         renames.has(safeRenamed) ||
@@ -138,9 +147,9 @@ export async function visitAllIdentifiers(
       }
       renames.add(safeRenamed);
 
-      smallestScope.scope.rename(smallestScopeNode.name, safeRenamed);
+      smallestScope.scope.rename(originalName, safeRenamed);
     }
-    markVisited(smallestScope, smallestScopeNode.name, visited);
+    markVisited(smallestScope, visited);
 
     // Save progress periodically
     if (sessionId && (i % 10 === 0 || i === scopes.length - 1)) {
@@ -193,15 +202,28 @@ function findScopes(ast: Node): NodePath<Identifier>[] {
 }
 
 function hasVisited(path: NodePath<Identifier>, visited: Set<string>) {
-  return visited.has(path.node.name);
+  return visited.has(getVisitedKey(path));
 }
 
 function markVisited(
   path: NodePath<Identifier>,
-  newName: string,
   visited: Set<string>
 ) {
-  visited.add(newName);
+  visited.add(getVisitedKey(path));
+}
+
+function getVisitedKey(path: NodePath<Identifier>): string {
+  const binding = path.scope.getBinding(path.node.name);
+  const bindingScopePath = binding?.scope?.path ?? path.scope.path;
+  const bindingScopeNode = bindingScopePath.node;
+  const scopeIdentity = bindingScopeNode.loc
+    ? `${bindingScopeNode.type}_${bindingScopeNode.loc.start.line}_${bindingScopeNode.loc.start.column}_${bindingScopeNode.loc.end.line}_${bindingScopeNode.loc.end.column}`
+    : `${bindingScopeNode.type}_${bindingScopeNode.start || 0}_${bindingScopeNode.end || 0}`;
+  const declarationNode = binding?.path?.node ?? path.node;
+  const declarationIdentity = declarationNode.loc
+    ? `${declarationNode.type}_${declarationNode.loc.start.line}_${declarationNode.loc.start.column}_${declarationNode.loc.end.line}_${declarationNode.loc.end.column}`
+    : `${declarationNode.type}_${declarationNode.start || 0}_${declarationNode.end || 0}`;
+  return `${scopeIdentity}::${declarationIdentity}`;
 }
 
 async function scopeToString(

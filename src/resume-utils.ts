@@ -39,6 +39,22 @@ export function resolveResumeStatePath(codePath: string): string {
   return path.join(path.dirname(normalizedPath), `.${baseName}.${hash}${RESUME_STATE_SUFFIX}`);
 }
 
+export function resolveResumeSessionPath(resumePath: string, filePath?: string): string {
+  if (!filePath) {
+    return resolveResumeStatePath(resumePath);
+  }
+
+  const normalizedResumePath = path.resolve(resumePath);
+  const normalizedFilePath = path.resolve(filePath);
+  const hash = crypto
+    .createHash("md5")
+    .update(`${normalizedResumePath}::${normalizedFilePath}`)
+    .digest("hex")
+    .slice(0, 8);
+  const baseName = path.basename(normalizedResumePath);
+  return path.join(path.dirname(normalizedResumePath), `.${baseName}.${hash}${RESUME_STATE_SUFFIX}`);
+}
+
 export async function saveResumeState(
   state: ResumeState,
   savePath: string

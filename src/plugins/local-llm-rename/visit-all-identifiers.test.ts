@@ -222,6 +222,32 @@ function foo() {
   assert.equal(scope, code);
 });
 
+test("should not skip same short names across different scopes", async () => {
+  const code = `
+{
+  const a = 1;
+  a;
+}
+{
+  const a = 2;
+  a;
+}
+  `.trim();
+
+  let seenA = 0;
+  await visitAllIdentifiers(
+    code,
+    async (name) => {
+      if (name === "a") {
+        seenA++;
+      }
+      return name;
+    },
+    200
+  );
+  assert.equal(seenA, 2);
+});
+
 test("should not rename object properties", async () => {
   const code = `
 const c = 2;
